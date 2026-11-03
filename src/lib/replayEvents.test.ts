@@ -40,6 +40,18 @@ describe('decodeReplayLines', () => {
   });
 });
 
+/** Lines of one recording: meta, full snapshot, then incremental events. */
+function recording(recordingId: string, start: number, increments: number[], sessionId = SESSION_ID) {
+  return [
+    replayLine(meta(start, `https://x/${recordingId}`), { recordingId, seq: 0, sessionId }),
+    replayLine(snapshot(start + 1), { recordingId, seq: 1, sessionId }),
+    ...increments.map((ts, i) => replayLine(incremental(ts), { recordingId, seq: i + 2, sessionId })),
+  ].map((line) => ({ line }));
+}
+
+const stamps = (track: Array<{ type: number; timestamp: number }>) =>
+  track.map((event) => [event.type, event.timestamp]);
+
 describe('mergeReplayEvents', () => {
   it('de-duplicates by recording, gen and seq and sorts by timestamp', () => {
     const known = new Map<string, DecodedReplayEvent>();
@@ -53,28 +65,66 @@ describe('mergeReplayEvents', () => {
     ).decoded;
 
     mergeReplayEvents(known, first);
-    const merged = mergeReplayEvents(known, second);
+    const tracks = mergeReplayEvents(known, second);
 
-    expect(merged.map((event) => [event.type, event.timestamp])).toEqual([
+    expect(tracks).toHaveLength(1);
+    expect(stamps(tracks[0])).toEqual([
       [4, 1999],
       [2, 2000],
       [3, 2500],
     ]);
   });
 
-  it('keeps events of a reload (new recording) after the earlier one', () => {
+  it('plays a reload (next recording) after the earlier one on the same track', () => {
     const known = new Map<string, DecodedReplayEvent>();
-    const decoded = decodeReplayLines(
+    const { decoded } = decodeReplayLines(
+      [...recording('rec2', 5000, [5100]), ...recording('rec1', 1000, [1100])],
+      SESSION_ID
+    );
+
+    const tracks = mergeReplayEvents(known, decoded);
+
+    expect(tracks).toHaveLength(1);
+    expect(stamps(tracks[0]).map(([, ts]) => ts)).toEqual([1000, 1001, 1100, 5000, 5001, 5100]);
+  });
+
+  it('puts recordings that overlap in time (two tabs) on separate tracks', () => {
+    const known = new Map<string, DecodedReplayEvent>();
+    const { decoded } = decodeReplayLines(
       [
-        { line: replayLine(meta(5000, 'https://x/b'), { recordingId: 'rec2', seq: 0 }) },
-        { line: replayLine(meta(1000, 'https://x/a'), { recordingId: 'rec1', seq: 0 }) },
+        ...recording('tabA', 1000, [1500, 3000]),
+        ...recording('tabB', 2000, [2500]),
+        ...recording('tabA2', 4000, [4100]),
       ],
       SESSION_ID
-    ).decoded;
+    );
 
-    const merged = mergeReplayEvents(known, decoded);
+    const tracks = mergeReplayEvents(known, decoded);
 
-    expect(merged.map((event) => (event.data as { href: string }).href)).toEqual(['https://x/a', 'https://x/b']);
+    expect(tracks.map((track) => track.map((event) => event.timestamp))).toEqual([
+      [1000, 1001, 1500, 3000, 4000, 4001, 4100],
+      [2000, 2001, 2500],
+    ]);
+  });
+
+  it('keeps distinct events without recording id that share timestamp and type (replay < 2.13)', () => {
+    const legacy = (payload: Record<string, unknown>) =>
+      replayLine(payload)
+        .replace(/ event_data_recording_id=\S+/, '')
+        .replace(/ event_data_gen=\S+/, '')
+        .replace(/ event_data_seq=\S+/, '');
+    const known = new Map<string, DecodedReplayEvent>();
+    const lines = [
+      legacy(meta(1000)),
+      legacy(snapshot(1001)),
+      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 1 } }),
+      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 2 } }),
+      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 2 } }),
+    ].map((line) => ({ line }));
+
+    const [track] = mergeReplayEvents(known, decodeReplayLines(lines, SESSION_ID).decoded);
+
+    expect(track).toHaveLength(4);
   });
 });
 

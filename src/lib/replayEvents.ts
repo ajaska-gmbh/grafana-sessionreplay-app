@@ -9,6 +9,8 @@ export const RRWEB_META = 4;
 
 export interface DecodedReplayEvent {
   key: string;
+  /** One recording per page load (or per tab); empty for replay < 2.13. */
+  recordingId: string;
   gen: number;
   seq: number;
   event: eventWithTime;
@@ -44,10 +46,13 @@ export function decodeReplayLines(
       continue;
     }
 
+    const recordingId = fields.event_data_recording_id ?? '';
     const gen = Number(fields.event_data_gen ?? 0) || 0;
     const seq = Number(fields.event_data_seq ?? 0) || 0;
     decoded.push({
-      key: `${fields.event_data_recording_id ?? ''}:${gen}:${seq}:${event.timestamp}:${event.type}`,
+      // Replay < 2.13 sends no recording id/gen/seq: only identical payloads are duplicates then.
+      key: recordingId ? `${recordingId}:${gen}:${seq}` : fields.event_data_event,
+      recordingId,
       gen,
       seq,
       event,
@@ -58,21 +63,52 @@ export function decodeReplayLines(
 }
 
 /**
- * Merge new events into the known ones (de-duplicated by recording, gen, seq)
- * and return all events in playback order: rrweb timestamp, then gen and seq.
+ * Merge new events into the known ones (de-duplicated by recording, gen and
+ * seq) and split them into playable tracks.
+ *
+ * Every recording starts with its own Meta + full snapshot. Recordings that
+ * follow each other (page reloads) are played back to back on one track;
+ * recordings that overlap in time (the same session open in two tabs) get a
+ * track each, because mixing their DOM changes would corrupt the playback.
+ * Within a recording, events are ordered by rrweb timestamp, then gen and seq.
  */
 export function mergeReplayEvents(
   known: Map<string, DecodedReplayEvent>,
   incoming: DecodedReplayEvent[]
-): eventWithTime[] {
+): eventWithTime[][] {
   for (const entry of incoming) {
     if (!known.has(entry.key)) {
       known.set(entry.key, entry);
     }
   }
-  return [...known.values()]
-    .sort((a, b) => a.event.timestamp - b.event.timestamp || a.gen - b.gen || a.seq - b.seq)
-    .map((entry) => entry.event);
+
+  const byRecording = new Map<string, DecodedReplayEvent[]>();
+  for (const entry of known.values()) {
+    const list = byRecording.get(entry.recordingId) ?? [];
+    list.push(entry);
+    byRecording.set(entry.recordingId, list);
+  }
+
+  const recordings = [...byRecording.values()]
+    .map((entries) =>
+      entries
+        .sort((a, b) => a.event.timestamp - b.event.timestamp || a.gen - b.gen || a.seq - b.seq)
+        .map((entry) => entry.event)
+    )
+    .sort((a, b) => a[0].timestamp - b[0].timestamp);
+
+  const tracks: eventWithTime[][] = [];
+  for (const recording of recordings) {
+    const start = recording[0].timestamp;
+    const track = tracks.find((candidate) => candidate[candidate.length - 1].timestamp <= start);
+    if (track) {
+      track.push(...recording);
+    } else {
+      tracks.push([...recording]);
+    }
+  }
+
+  return tracks.map(playableEvents).filter((track) => track.length > 0);
 }
 
 /**

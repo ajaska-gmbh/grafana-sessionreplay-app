@@ -5,7 +5,7 @@ import { Navigate, useParams } from 'react-router-dom';
 import { useSettings } from '../hooks/useSettings';
 import { replayUrl } from '../lib/format';
 import { fetchSessions } from '../lib/sessionQueries';
-import { MAX_SESSION_MS } from '../constants';
+import { sessionRange } from '../lib/sessions';
 
 const LOOKBACKS_MS = [24 * 3600_000, 14 * 24 * 3600_000];
 
@@ -24,13 +24,10 @@ function SessionRedirectPage() {
     (async () => {
       const now = Date.now();
       for (const lookback of LOOKBACKS_MS) {
-        const sessions = await fetchSessions(lokiUid, [], now - lookback, now, 1000, sessionId);
+        const { sessions } = await fetchSessions(lokiUid, [], now - lookback, now, 1000, sessionId);
         const session = sessions.find((candidate) => candidate.sessionId === sessionId);
         if (session) {
-          return replayUrl(session.appName, sessionId, {
-            from: session.startedMs - 60_000,
-            to: Math.min(now, session.lastStartedMs + MAX_SESSION_MS),
-          });
+          return replayUrl(session.appName, sessionId, sessionRange(session, now));
         }
       }
       return null;

@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { css } from '@emotion/css';
 import { AppEvents, GrafanaTheme2 } from '@grafana/data';
 import { config, getAppEvents } from '@grafana/runtime';
-import { Alert, LoadingPlaceholder, useStyles2 } from '@grafana/ui';
+import { Alert, LoadingPlaceholder, RadioButtonGroup, useStyles2 } from '@grafana/ui';
 import { useSessionData } from '../../hooks/useSessionData';
 import { replayUrl } from '../../lib/format';
 import type { JourneyEvent } from '../../lib/journey';
@@ -17,6 +17,8 @@ export interface SessionReplayProps {
   to?: number;
   /** Start offset in ms from the recording start. */
   t?: number;
+  /** Which tab to play when the session ran in several tabs at once (0-based). */
+  track?: number;
   lokiUid: string;
   tempoUid: string;
   /** Height of the player + journey area; the full-screen page fills the view. */
@@ -24,19 +26,30 @@ export interface SessionReplayProps {
 }
 
 /** Absolute link to this session at a given offset (what "Share" copies). */
-export function shareLink(props: Pick<SessionReplayProps, 'appName' | 'sessionId' | 'from' | 'to'>, offsetMs: number) {
-  const path = replayUrl(props.appName, props.sessionId, { t: offsetMs, from: props.from, to: props.to });
+export function shareLink(
+  props: Pick<SessionReplayProps, 'appName' | 'sessionId' | 'from' | 'to' | 'track'>,
+  offsetMs: number
+) {
+  const path = replayUrl(props.appName, props.sessionId, {
+    t: offsetMs,
+    from: props.from,
+    to: props.to,
+    track: props.track,
+  });
   return `${window.location.origin}${config.appSubUrl ?? ''}${path}`;
 }
 
 export function SessionReplay(props: SessionReplayProps) {
   const { appName, sessionId, from, to, t, lokiUid, tempoUid, height = '100%' } = props;
   const styles = useStyles2(getStyles);
-  const data = useSessionData({ lokiUid, appName, sessionId, from, to });
+  const data = useSessionData({ lokiUid, sessionId, from, to });
   const [seekRequest, setSeekRequest] = useState<SeekRequest>();
   const [playheadMs, setPlayheadMs] = useState<number>();
+  const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
 
-  const recordingStartMs = data.events[0]?.timestamp;
+  const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
+  const events = useMemo(() => data.tracks[track] ?? [], [data.tracks, track]);
+  const recordingStartMs = events[0]?.timestamp;
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
@@ -67,7 +80,7 @@ export function SessionReplay(props: SessionReplayProps) {
   const onShare = useCallback(
     async (offsetMs: number) => {
       const range = data.range ?? (from !== undefined && to !== undefined ? { from, to } : undefined);
-      const link = shareLink({ appName, sessionId, from: range?.from, to: range?.to }, offsetMs);
+      const link = shareLink({ appName, sessionId, from: range?.from, to: range?.to, track }, offsetMs);
       try {
         await navigator.clipboard.writeText(link);
         getAppEvents().publish({ type: AppEvents.alertSuccess.name, payload: ['Link to this moment copied'] });
@@ -75,7 +88,7 @@ export function SessionReplay(props: SessionReplayProps) {
         getAppEvents().publish({ type: AppEvents.alertWarning.name, payload: ['Could not copy the link', link] });
       }
     },
-    [appName, sessionId, data.range, from, to]
+    [appName, sessionId, data.range, from, to, track]
   );
 
   if (data.error) {
@@ -94,15 +107,30 @@ export function SessionReplay(props: SessionReplayProps) {
     );
   }
 
-  const noRecording = !data.loadingReplay && data.events.length === 0;
+  const noRecording = !data.loadingReplay && events.length === 0;
 
   return (
     <div className={styles.layout} style={{ height }} data-testid={testIds.replay.container}>
       <div className={styles.player}>
-        {data.events.length > 0 ? (
+        {data.tracks.length > 1 && (
+          <div className={styles.tracks}>
+            <span>This session was open in {data.tracks.length} tabs at the same time:</span>
+            <RadioButtonGroup
+              size="sm"
+              options={data.tracks.map((_, index) => ({ label: `Tab ${index + 1}`, value: index }))}
+              value={track}
+              onChange={(value) => {
+                setSelectedTrack(value);
+                setPlayheadMs(undefined);
+              }}
+            />
+          </div>
+        )}
+        {events.length > 0 ? (
           <ReplayPlayer
-            events={data.events}
-            initialOffsetMs={t}
+            key={track}
+            events={events}
+            initialOffsetMs={track === (props.track ?? 0) ? t : 0}
             seekRequest={seekRequest}
             markers={markers}
             onTimeChange={onTimeChange}
@@ -146,4 +174,5 @@ const getStyles = (theme: GrafanaTheme2) => ({
   player: css({ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: theme.spacing(1) }),
   journey: css({ minWidth: 0, minHeight: 0, [theme.breakpoints.down('lg')]: { height: 480 } }),
   note: css({ color: theme.colors.text.secondary, fontSize: theme.typography.bodySmall.fontSize }),
+  tracks: css({ display: 'flex', alignItems: 'center', gap: theme.spacing(1), flexWrap: 'wrap' }),
 });

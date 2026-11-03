@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { eventWithTime } from '@grafana/rrweb-types';
-import { FARO_REPLAY_SOURCE, FARO_SOURCE, MAX_SESSION_MS } from '../constants';
+import { REPLAY_PAGE_SIZE } from '../constants';
 import { buildJourney, type JourneyEvent } from '../lib/journey';
-import { createLokiFetcher, logqlString, readForward, type LokiFetcher } from '../lib/loki';
-import { decodeReplayLines, mergeReplayEvents, playableEvents, type DecodedReplayEvent } from '../lib/replayEvents';
-import { REPLAY_STARTED_EVENT, summariseSessions, type SessionSummary } from '../lib/sessions';
+import { createLokiFetcher, readForward, type LokiFetcher } from '../lib/loki';
+import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
+import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from '../lib/replayEvents';
+import { REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import type { LokiLine } from '../types';
 
 export interface SessionDataState {
   /** Resolved time range of the session (epoch ms). */
   range?: { from: number; to: number };
   session?: SessionSummary;
-  /** rrweb events ready for the player (grows while pages load). */
-  events: eventWithTime[];
+  /**
+   * Playable rrweb event lists (grow while pages load). Usually one; a session
+   * open in several tabs at once has one track per tab.
+   */
+  tracks: eventWithTime[][];
   journey: JourneyEvent[];
   loadingReplay: boolean;
   loadingJourney: boolean;
@@ -21,27 +25,16 @@ export interface SessionDataState {
   notFound: boolean;
 }
 
-/** LogQL selector for one app's stream; the app name is a label (see Alloy). */
-export function streamSelector(source: string, appName: string): string {
-  return `{source=${logqlString(source)}, app_name=${logqlString(appName)}}`;
-}
-
-/** LogQL line filter that narrows to one session before parsing. */
-export function sessionFilter(sessionId: string): string {
-  return `|= ${logqlString(`session_id=${sessionId}`)}`;
-}
-
 /**
  * Find a session's recordings when the link carries no time range: look for
  * its `started` markers in the last day first, then the full retention.
  */
 async function locateSession(
   fetcher: LokiFetcher,
-  appName: string,
   sessionId: string,
   nowMs: number
 ): Promise<SessionSummary | undefined> {
-  const expr = `${streamSelector(FARO_SOURCE, appName)} |= ${logqlString(`event_name=${REPLAY_STARTED_EVENT}`)} ${sessionFilter(sessionId)}`;
+  const expr = STREAMS.markers + eventLineFilter(REPLAY_STARTED_EVENT) + sessionLineFilter(sessionId);
   for (const lookbackMs of [24 * 3600 * 1000, 14 * 24 * 3600 * 1000]) {
     const lines = await fetcher({ expr, fromMs: nowMs - lookbackMs, toMs: nowMs, limit: 1000, direction: 'forward' });
     const session = summariseSessions(lines).find((candidate) => candidate.sessionId === sessionId);
@@ -58,15 +51,14 @@ async function locateSession(
  */
 export function useSessionData(params: {
   lokiUid: string;
-  appName: string;
   sessionId: string;
   from?: number;
   to?: number;
 }): SessionDataState {
-  const { lokiUid, appName, sessionId, from, to } = params;
+  const { lokiUid, sessionId, from, to } = params;
   const fetcher = useMemo(() => createLokiFetcher(lokiUid), [lokiUid]);
   const [state, setState] = useState<SessionDataState>({
-    events: [],
+    tracks: [],
     journey: [],
     loadingReplay: true,
     loadingJourney: true,
@@ -88,27 +80,23 @@ export function useSessionData(params: {
       let session: SessionSummary | undefined;
 
       if (!range) {
-        session = await locateSession(fetcher, appName, sessionId, nowMs);
+        session = await locateSession(fetcher, sessionId, nowMs);
         if (!session) {
           update({ notFound: true, loadingReplay: false, loadingJourney: false });
           return;
         }
-        // Faro ends a session after 4h; a minute of slack for clock skew.
-        range = {
-          from: session.startedMs - 60_000,
-          to: Math.min(nowMs, session.lastStartedMs + MAX_SESSION_MS),
-        };
+        range = sessionRange(session, nowMs);
       }
       update({ range, session });
 
       const replay = (async () => {
         const known = new Map<string, DecodedReplayEvent>();
         let skipped = 0;
-        const expr = `${streamSelector(FARO_REPLAY_SOURCE, appName)} ${sessionFilter(sessionId)}`;
-        for await (const page of readForward(fetcher, expr, range.from, range.to)) {
+        const expr = STREAMS.payloads + sessionLineFilter(sessionId);
+        for await (const page of readForward(fetcher, expr, range.from, range.to, REPLAY_PAGE_SIZE)) {
           const { decoded, skipped: pageSkipped } = decodeReplayLines(page, sessionId);
           skipped += pageSkipped;
-          update({ events: playableEvents(mergeReplayEvents(known, decoded)), skippedEvents: skipped });
+          update({ tracks: mergeReplayEvents(known, decoded), skippedEvents: skipped });
           if (cancelled) {
             return;
           }
@@ -118,7 +106,7 @@ export function useSessionData(params: {
 
       const journey = (async () => {
         const lines: LokiLine[] = [];
-        const expr = `${streamSelector(FARO_SOURCE, appName)} ${sessionFilter(sessionId)}`;
+        const expr = STREAMS.faro + sessionLineFilter(sessionId);
         for await (const page of readForward(fetcher, expr, range.from, range.to)) {
           lines.push(...page);
           update({ journey: buildJourney(lines, sessionId) });
@@ -140,7 +128,7 @@ export function useSessionData(params: {
     return () => {
       cancelled = true;
     };
-  }, [fetcher, appName, sessionId, from, to]);
+  }, [fetcher, sessionId, from, to]);
 
   return state;
 }

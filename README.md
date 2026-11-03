@@ -33,10 +33,16 @@ Grafana Cloud collector.
 ```text
 Browser (Faro + ReplayInstrumentation)
   -> Alloy faro.receiver -> loki.process "faro" -> Loki
-       {source="faro",        app_name="..."}   logs, events, errors, replay start markers
-       {source="faro_replay", app_name="..."}   faro.session_recording.event (rrweb payloads)
+       {source="faro"}                            logs, events, errors, measurements
+       {source="faro_replay", replay="marker"}    session recording started/paused/resumed
+       {source="faro_replay", replay="payload"}   rrweb events (DOM snapshots, can be MBs)
+       app_name / app_environment as structured metadata (not labels)
   -> this app (queries Loki through Grafana's /api/ds/query, so datasource access rules apply)
 ```
+
+The streams are a fixed set, so a new frontend (or anything a public client
+sends) never creates Loki streams or needs a config change. The app finds replays
+and journeys by `session_id` and filters apps with `| app_name=~"…"`.
 
 Playback uses `@grafana/rrweb`, the same rrweb fork the recorder uses. Keep it on the
 version that `@grafana/faro-instrumentation-replay` depends on.
@@ -44,12 +50,14 @@ version that `@grafana/faro-instrumentation-replay` depends on.
 ### Requirements
 
 - Grafana ≥ 13.2.
-- Loki with `max_line_size` large enough for DOM snapshots (we use `8MB`), written to
-  directly or through a gateway that accepts large bodies.
+- Loki 3 with structured metadata enabled (`allow_structured_metadata: true`) and
+  `max_line_size` large enough for DOM snapshots (we use `8MB`), written to directly or
+  through a gateway that accepts large bodies.
 - Alloy ≥ 1.20 for `faro.receiver` when the Faro Web SDK is ≥ 2.13. The SDK sends an
   `Idempotency-Key` header, and older receivers reject the CORS preflight, which drops
-  **all** Faro telemetry.
-- Alloy pipeline, see `kubernetes-configs/monitoring-new/alloy-traces-values.yaml`:
+  **all** Faro telemetry. Ideally run it as its own collector for browser traffic;
+  ours is `alloy-faro` in `kubernetes-configs/monitoring-new/alloy-faro-values.yaml`.
+- Alloy pipeline:
 
   ```alloy
   faro.receiver "default" {
@@ -59,11 +67,11 @@ version that `@grafana/faro-instrumentation-replay` depends on.
   loki.process "faro" {
     forward_to = [loki.write.faro.receiver]
 
-    stage.regex {
-      expression = "(?:^| )app_name=(?P<app_name>[a-z0-9-]{1,60}-frontend)(?: |$)"
+    stage.logfmt {
+      mapping = { app_name = "", app_environment = "" }
     }
-    stage.labels {
-      values = { app_name = "" }
+    stage.structured_metadata {
+      values = { app_name = "", app_environment = "" }
     }
     stage.static_labels {
       values = { source = "faro" }
@@ -71,7 +79,13 @@ version that `@grafana/faro-instrumentation-replay` depends on.
     stage.match {
       selector = "{source=\"faro\"} |= \"event_name=faro.session_recording.event \""
       stage.static_labels {
-        values = { source = "faro_replay" }
+        values = { source = "faro_replay", replay = "payload" }
+      }
+    }
+    stage.match {
+      selector = "{source=\"faro\"} |= \"event_name=faro.session_recording.\""
+      stage.static_labels {
+        values = { source = "faro_replay", replay = "marker" }
       }
     }
   }

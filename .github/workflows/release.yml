@@ -45,7 +45,8 @@ jobs:
       - run: npm run build
 
       - name: Sign (private, for our Grafana instances)
-        run: npx --yes @grafana/sign-plugin@latest --rootUrls "${ROOT_URLS}"
+        # The signer from package-lock (not @latest): it receives the signing token.
+        run: npm run sign -- --rootUrls "${ROOT_URLS}"
         env:
           GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
 

@@ -17,11 +17,10 @@ import {
   Tooltip,
   useStyles2,
 } from '@grafana/ui';
-import { MAX_SESSION_MS } from '../constants';
 import { useSettings } from '../hooks/useSettings';
 import { replayUrl } from '../lib/format';
 import { fetchAppNames, fetchErrorCounts, fetchSessions } from '../lib/sessionQueries';
-import { matchesSearch, type SessionSummary } from '../lib/sessions';
+import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
 
 const LOOKBACKS: Array<ComboboxOption<number>> = [
@@ -39,13 +38,9 @@ interface QueryResult {
   key: string;
   nowMs: number;
   sessions: SessionSummary[];
+  truncated?: boolean;
   errors: Map<string, number>;
   failure?: string;
-}
-
-/** Time range a replay link opens with: the whole session, at most 4h after its last page load. */
-export function sessionRange(session: SessionSummary, nowMs: number) {
-  return { from: session.startedMs - 60_000, to: Math.min(nowMs, session.lastStartedMs + MAX_SESSION_MS) };
 }
 
 function SessionsPage() {
@@ -83,7 +78,7 @@ function SessionsPage() {
     ])
       .then(([found, errorCounts]) => {
         if (!cancelled) {
-          setResult({ key, nowMs: now, sessions: found, errors: errorCounts });
+          setResult({ key, nowMs: now, sessions: found.sessions, truncated: found.truncated, errors: errorCounts });
         }
       })
       .catch((error: unknown) => {
@@ -209,6 +204,12 @@ function SessionsPage() {
           />
         </Stack>
 
+        {!loading && result?.truncated && (
+          <Alert severity="warning" title="Not all sessions are listed">
+            The range holds more recordings than one query returns; only the newest are shown. Pick a shorter range or
+            filter by app.
+          </Alert>
+        )}
         {failure && (
           <Alert severity="error" title="Could not load sessions">
             {failure}

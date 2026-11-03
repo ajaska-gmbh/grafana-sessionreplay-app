@@ -1,5 +1,5 @@
 import { formatClock, formatOffset, replayUrl, traceExploreUrl } from './format';
-import { matchesSearch, summariseSessions } from './sessions';
+import { matchesSearch, sessionRange, summariseSessions } from './sessions';
 import { startedLine } from './fixtures';
 
 describe('summariseSessions', () => {
@@ -44,6 +44,16 @@ describe('summariseSessions', () => {
   });
 });
 
+describe('sessionRange', () => {
+  it('covers the session with 10 minutes of clock slack, capped at now', () => {
+    const [session] = summariseSessions([{ tsNs: '0', line: startedLine('2026-11-03 10:00:00.000 +0000 UTC') }]);
+    const start = Date.parse('2026-11-03T10:00:00Z');
+
+    expect(sessionRange(session, start + 3600_000)).toEqual({ from: start - 600_000, to: start + 3600_000 });
+    expect(sessionRange(session, start + 24 * 3600_000).to).toBe(start + 4 * 3600_000 + 600_000);
+  });
+});
+
 describe('format', () => {
   it('formats clock and offsets', () => {
     expect(formatClock(41_615)).toBe('0:41');
@@ -56,6 +66,7 @@ describe('format', () => {
     expect(replayUrl('ppd-leads-frontend', 'abc', { t: 41615.4, from: 1, to: 2 })).toBe(
       '/a/ajaska-sessionreplay-app/app/ppd-leads-frontend/session/abc?t=41615&from=1&to=2'
     );
+    expect(replayUrl('a', 'b', { track: 1 })).toBe('/a/ajaska-sessionreplay-app/app/a/session/b?track=1');
     expect(replayUrl('a b', 'c/d')).toBe('/a/ajaska-sessionreplay-app/app/a%20b/session/c%2Fd');
   });
 

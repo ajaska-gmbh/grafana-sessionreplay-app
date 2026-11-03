@@ -1,3 +1,4 @@
+import { CLOCK_SLACK_MS, MAX_SESSION_MS } from '../constants';
 import { faroTimeMs } from './journey';
 import { parseLogfmt } from './logfmt';
 
@@ -96,4 +97,16 @@ export function matchesSearch(session: SessionSummary, search: string): boolean 
     session.browser,
     session.os,
   ].some((value) => value?.toLowerCase().includes(needle));
+}
+
+/**
+ * Loki time range that holds a session's recordings: from its first page load
+ * until Faro's maximum session length after the last one, with slack for
+ * browser clock drift (Loki stores the receive time).
+ */
+export function sessionRange(session: SessionSummary, nowMs: number): { from: number; to: number } {
+  return {
+    from: session.startedMs - CLOCK_SLACK_MS,
+    to: Math.min(nowMs, session.lastStartedMs + MAX_SESSION_MS + CLOCK_SLACK_MS),
+  };
 }

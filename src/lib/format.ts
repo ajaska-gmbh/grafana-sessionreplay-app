@@ -21,11 +21,14 @@ export function formatOffset(ms: number): string {
 export function replayUrl(
   appName: string,
   sessionId: string,
-  options: { t?: number; from?: number; to?: number } = {}
+  options: { t?: number; from?: number; to?: number; track?: number } = {}
 ): string {
   const params = new URLSearchParams();
   if (options.t !== undefined && options.t > 0) {
     params.set('t', String(Math.round(options.t)));
+  }
+  if (options.track !== undefined && options.track > 0) {
+    params.set('track', String(options.track));
   }
   if (options.from !== undefined) {
     params.set('from', String(Math.floor(options.from)));

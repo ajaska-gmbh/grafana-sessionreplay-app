@@ -89,6 +89,11 @@ export function ReplayPlayer({
   const frameRef = useRef<number | null>(null);
 
   const [playing, setPlaying] = useState(false);
+  // Read by the effect that appends events, which must not re-run on play/pause.
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -208,10 +213,24 @@ export function ReplayPlayer({
       return;
     }
 
+    let earliestAdded = Infinity;
     for (const event of events) {
       if (!addedRef.current.has(event)) {
         replayer.addEvent(event);
         addedRef.current.add(event);
+        earliestAdded = Math.min(earliestAdded, event.timestamp);
+      }
+    }
+    // rrweb applies an event older than the playhead immediately, out of
+    // order (a retried batch can land in a later Loki page). Re-seeking to
+    // the current position rebuilds the DOM from the last snapshot instead.
+    const meta = replayer.getMetaData();
+    const current = replayer.getCurrentTime();
+    if (earliestAdded < meta.startTime + current) {
+      if (playingRef.current) {
+        replayer.play(current);
+      } else {
+        replayer.pause(current);
       }
     }
     scheduleSync();
