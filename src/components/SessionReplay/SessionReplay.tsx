@@ -188,6 +188,12 @@ export function SessionReplay(props: SessionReplayProps) {
             {data.skippedEvents} recording events could not be decoded and were skipped.
           </div>
         )}
+        {data.unresolvedStylesheets > 0 && (
+          <div className={styles.note}>
+            {data.unresolvedStylesheets} stylesheets of this recording could not be restored; parts of the page may look
+            unstyled.
+          </div>
+        )}
       </div>
       <div className={styles.journey}>
         <UserJourney

@@ -23,6 +23,7 @@ export interface SessionDataState {
   loadingReplay: boolean;
   loadingJourney: boolean;
   skippedEvents: number;
+  unresolvedStylesheets: number;
   /** Loki time of the newest replay line (epoch ms); decides whether live is offered. */
   lastReplayMs?: number;
   error?: string;
@@ -79,6 +80,7 @@ export function useSessionData(params: {
     loadingReplay: true,
     loadingJourney: true,
     skippedEvents: 0,
+    unresolvedStylesheets: 0,
     notFound: false,
   });
 
@@ -97,6 +99,7 @@ export function useSessionData(params: {
         tracks: store.tracks,
         journey: store.journey,
         skippedEvents: store.skipped,
+        unresolvedStylesheets: store.unresolvedStylesheets,
         lastReplayMs: store.lastReplayMs,
       });
 
@@ -183,6 +186,7 @@ export function useSessionData(params: {
             tracks: store.tracks,
             journey: store.journey,
             skippedEvents: store.skipped,
+            unresolvedStylesheets: store.unresolvedStylesheets,
             lastReplayMs: store.lastReplayMs,
             liveError: undefined,
           }));
