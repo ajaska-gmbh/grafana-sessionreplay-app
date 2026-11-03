@@ -1,0 +1,9 @@
+apiVersion: 1
+
+apps:
+  - type: 'ajaska-sessionreplay-app'
+    org_id: 1
+    disabled: false
+    jsonData:
+      lokiUid: loki
+      tempoUid: tempo

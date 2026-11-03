@@ -1,0 +1,64 @@
+# Builds, privately signs and publishes the plugin on a version tag (v1.2.3).
+# The signature is only valid for the root URLs below; Grafana refuses to load
+# the plugin anywhere else. Requires the repository secret
+# GRAFANA_ACCESS_POLICY_TOKEN (Grafana Cloud access policy, scope plugins:write,
+# created in the org whose slug prefixes the plugin id).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  ROOT_URLS: https://grafana.ajaska.de/,https://internalajaska.grafana.net/
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Check the tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != package.json v${version}"; exit 1; }
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "PLUGIN_ID=$(node -p "require('./src/plugin.json').id")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:ci
+      - run: npm run build
+
+      - name: Sign (private, for our Grafana instances)
+        run: npx --yes @grafana/sign-plugin@latest --rootUrls "${ROOT_URLS}"
+        env:
+          GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+
+      - name: Package
+        run: |
+          mv dist "${PLUGIN_ID}"
+          zip -qr "${PLUGIN_ID}-${VERSION}.zip" "${PLUGIN_ID}"
+          sha1sum "${PLUGIN_ID}-${VERSION}.zip" | cut -d' ' -f1 > "${PLUGIN_ID}-${VERSION}.zip.sha1"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "${PLUGIN_ID}-${VERSION}.zip" "${PLUGIN_ID}-${VERSION}.zip.sha1" \
+            --title "${GITHUB_REF_NAME}" --generate-notes

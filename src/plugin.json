@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "app",
+  "name": "Session Replay",
+  "id": "ajaska-sessionreplay-app",
+  "info": {
+    "keywords": ["faro", "session replay", "rrweb", "frontend observability", "loki"],
+    "description": "Browse and replay browser sessions recorded by Grafana Faro's ReplayInstrumentation and stored in your own Loki.",
+    "author": {
+      "name": "Ajaska"
+    },
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "Source",
+        "url": "https://github.com/ajaska-gmbh/grafana-sessionreplay-app"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Sessions",
+      "path": "/a/%PLUGIN_ID%/sessions",
+      "role": "Editor",
+      "addToNav": true,
+      "defaultNav": true
+    },
+    {
+      "type": "page",
+      "icon": "cog",
+      "name": "Configuration",
+      "path": "/plugins/%PLUGIN_ID%",
+      "role": "Admin",
+      "addToNav": true
+    }
+  ],
+  "extensions": {
+    "exposedComponents": [
+      {
+        "id": "ajaska-sessionreplay-app/replay-player/v1",
+        "title": "Session replay player",
+        "description": "Replay player with the user journey for one Faro session."
+      }
+    ]
+  },
+  "dependencies": {
+    "grafanaDependency": ">=13.2.0",
+    "plugins": []
+  }
+}

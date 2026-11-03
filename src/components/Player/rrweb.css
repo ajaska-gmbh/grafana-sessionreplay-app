@@ -1,0 +1,6 @@
+/*
+ * @grafana/rrweb marks itself "sideEffects": false, so webpack drops a direct
+ * `import '@grafana/rrweb/dist/style.css'`. Importing it from our own CSS keeps
+ * the player styles (mouse cursor, mouse tail and iframe positioning).
+ */
+@import '@grafana/rrweb/dist/style.css';
