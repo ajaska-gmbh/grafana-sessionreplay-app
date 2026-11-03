@@ -11,6 +11,11 @@ updates:
       exclude:
         - '@grafana/plugin-e2e'
     open-pull-requests-limit: 5
+    # The player must use the rrweb fork version that
+    # @grafana/faro-instrumentation-replay records with; bump them together by hand.
+    ignore:
+      - dependency-name: '@grafana/rrweb'
+      - dependency-name: '@grafana/rrweb-types'
     commit-message:
       prefix: 'chore'
       include: 'scope'
@@ -51,14 +56,3 @@ updates:
       prefix: 'chore(ci)'
     open-pull-requests-limit: 5
 
-  - package-ecosystem: 'gomod'
-    directory: '/'
-    schedule:
-      interval: 'weekly'
-    open-pull-requests-limit: 5
-    allow:
-      - dependency-name: 'github.com/grafana/grafana-plugin-sdk-go'
-        dependency-type: 'all'
-    commit-message:
-      prefix: 'chore'
-      include: 'scope'
