@@ -147,19 +147,21 @@ describe('StylesheetResolver', () => {
     expect(resolver.unresolved).toBe(1);
   });
 
-  it('remembers a bounded number of texts', () => {
-    const resolver = new StylesheetResolver(1);
+  it('remembers texts up to a total size, first come first kept, and reports what it dropped', () => {
+    const resolver = new StylesheetResolver(CSS.length);
     const events = [
       frame(1, CSS),
       frame(2, OTHER_CSS),
-      frame(3, stylesheetRef(CSS)),
-      frame(4, stylesheetRef(OTHER_CSS)),
+      frame(3, OTHER_CSS),
+      frame(4, stylesheetRef(CSS)),
+      frame(5, stylesheetRef(OTHER_CSS)),
     ];
 
     resolver.addEvents(events);
 
-    expect(frameCss(events[2])).toBe(CSS);
-    expect(frameCss(events[3])).toBe('');
+    expect(frameCss(events[3])).toBe(CSS);
+    expect(frameCss(events[4])).toBe('');
+    expect(resolver.droppedTexts).toBe(1);
     expect(resolver.unresolved).toBe(1);
   });
 

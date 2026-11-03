@@ -24,8 +24,13 @@ import type { eventWithTime } from '@grafana/rrweb-types';
 
 export const STYLESHEET_REF_VERSION = 'ajaska-css/v1';
 export const STYLESHEET_REF_MIN_LENGTH = 2048;
-/** Distinct full texts remembered per session; references beyond that stay unresolved. */
-export const STYLESHEET_TEXTS_MAX = 512;
+/**
+ * Total length (UTF-16 code units, ~2 bytes each) of the distinct full texts
+ * remembered per session: 16 Mi units = 32 MiB, about 23 distinct CRM
+ * stylesheets of 0.7 MB. First come, first kept; texts beyond it are counted
+ * in `droppedTexts` and references to them stay unresolved.
+ */
+export const STYLESHEET_TEXTS_MAX_LENGTH = 16 * 1024 * 1024;
 
 const ANY_REF = /^ajaska-css\/v\d+:[0-9a-f]+:\d+$/;
 
@@ -66,15 +71,18 @@ interface Candidate {
 export class StylesheetResolver {
   /** References that could not be resolved, counted once each. */
   unresolved = 0;
+  /** Distinct full texts not remembered because of the size cap. */
+  droppedTexts = 0;
 
   private readonly byLength = new Map<number, Candidate[]>();
   private readonly resolved = new Map<string, string>();
   private readonly missing = new Set<string>();
-  private remembered = 0;
-  private readonly maxTexts: number;
+  private rememberedLength = 0;
+  private readonly maxLength: number;
+  private readonly dropped = new Set<string>();
 
-  constructor(maxTexts = STYLESHEET_TEXTS_MAX) {
-    this.maxTexts = maxTexts;
+  constructor(maxLength = STYLESHEET_TEXTS_MAX_LENGTH) {
+    this.maxLength = maxLength;
   }
 
   /**
@@ -104,12 +112,20 @@ export class StylesheetResolver {
 
   private remember(text: string): void {
     const candidates = this.byLength.get(text.length) ?? [];
-    if (candidates.some((candidate) => candidate.text === text) || this.remembered >= this.maxTexts) {
+    if (candidates.some((candidate) => candidate.text === text)) {
+      return;
+    }
+    if (this.rememberedLength + text.length > this.maxLength) {
+      // Counted once per distinct text (texts recur in old-format recordings).
+      if (!this.dropped.has(text)) {
+        this.dropped.add(text);
+        this.droppedTexts = this.dropped.size;
+      }
       return;
     }
     candidates.push({ text });
     this.byLength.set(text.length, candidates);
-    this.remembered++;
+    this.rememberedLength += text.length;
   }
 
   private lookup(ref: string): string | undefined {

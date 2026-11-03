@@ -25,6 +25,8 @@ export class SessionStore {
   skipped = 0;
   /** Stylesheet references (ajaska-css) that could not be resolved; those render unstyled. */
   unresolvedStylesheets = 0;
+  /** Distinct stylesheet texts the viewer did not keep (size cap). */
+  droppedStylesheets = 0;
   /** Loki (server) time of the newest replay line, epoch ms. */
   lastReplayMs?: number;
 
@@ -40,6 +42,7 @@ export class SessionStore {
     // the player sees them (it appends events by identity).
     this.stylesheets.addEvents(decoded.filter((entry) => !this.known.has(entry.key)).map((entry) => entry.event));
     this.unresolvedStylesheets = this.stylesheets.unresolved;
+    this.droppedStylesheets = this.stylesheets.droppedTexts;
     this.tracks = mergeReplayEvents(this.known, decoded);
     this.replayCursorNs = maxNs(this.replayCursorNs, lines);
     this.lastReplayMs = this.replayCursorNs ? nsToMs(this.replayCursorNs) : undefined;

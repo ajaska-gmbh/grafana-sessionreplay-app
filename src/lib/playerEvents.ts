@@ -42,3 +42,20 @@ export function pageAt(changes: PageChange[], timestamp: number): string | undef
   }
   return href;
 }
+
+/**
+ * Playback offset for a link's `t`. `t` counts from the first event the link's
+ * own range would have played: the first Meta (page load or checkout) at or
+ * after `linkFromMs`. When loading started earlier (see loadRange), that point
+ * is found in the loaded events. Undefined while it is not loaded yet.
+ */
+export function linkOffset(events: eventWithTime[], linkFromMs: number | undefined, t = 0): number | undefined {
+  if (events.length === 0) {
+    return undefined;
+  }
+  if (linkFromMs === undefined || events[0].timestamp >= linkFromMs) {
+    return t;
+  }
+  const anchor = events.find((event) => event.type === RRWEB_META && event.timestamp >= linkFromMs);
+  return anchor ? anchor.timestamp - events[0].timestamp + t : undefined;
+}

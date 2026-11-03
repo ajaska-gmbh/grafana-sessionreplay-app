@@ -110,3 +110,16 @@ export function sessionRange(session: SessionSummary, nowMs: number): { from: nu
     to: Math.min(nowMs, session.lastStartedMs + MAX_SESSION_MS + CLOCK_SLACK_MS),
   };
 }
+
+/**
+ * Loki range to load for a link that names its own range. Loading always
+ * starts at the session's first recording start (when known): later events
+ * may reference stylesheets sent there (format ajaska-css/v1), and a range
+ * that starts mid-session would leave them unresolved. The link's end stays.
+ */
+export function loadRange(link: { from: number; to: number }, session?: SessionSummary): { from: number; to: number } {
+  if (!session) {
+    return link;
+  }
+  return { from: Math.min(link.from, session.startedMs - CLOCK_SLACK_MS), to: link.to };
+}
