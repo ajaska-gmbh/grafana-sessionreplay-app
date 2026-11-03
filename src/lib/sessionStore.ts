@@ -2,6 +2,7 @@ import type { eventWithTime } from '@grafana/rrweb-types';
 import { buildJourney, type JourneyEvent } from './journey';
 import { compareNs } from './loki';
 import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from './replayEvents';
+import { StylesheetResolver } from './stylesheetRefs';
 import type { LokiLine } from '../types';
 
 /** A session counts as live while its recording received data this recently. */
@@ -14,6 +15,7 @@ export const LIVE_WINDOW_MS = 2 * 60 * 1000;
  */
 export class SessionStore {
   private readonly known = new Map<string, DecodedReplayEvent>();
+  private readonly stylesheets = new StylesheetResolver();
   private readonly journeyLines = new Map<string, LokiLine>();
   private replayCursorNs?: string;
   private journeyCursorNs?: string;
@@ -21,6 +23,10 @@ export class SessionStore {
   tracks: eventWithTime[][] = [];
   journey: JourneyEvent[] = [];
   skipped = 0;
+  /** Stylesheet references (ajaska-css) that could not be resolved; those render unstyled. */
+  unresolvedStylesheets = 0;
+  /** Distinct stylesheet texts the viewer did not keep (size cap). */
+  droppedStylesheets = 0;
   /** Loki (server) time of the newest replay line, epoch ms. */
   lastReplayMs?: number;
 
@@ -32,6 +38,11 @@ export class SessionStore {
     }
     const { decoded, skipped } = decodeReplayLines(lines, this.sessionId);
     this.skipped += skipped;
+    // Only events not loaded before; pages overlap. Resolved in place, before
+    // the player sees them (it appends events by identity).
+    this.stylesheets.addEvents(decoded.filter((entry) => !this.known.has(entry.key)).map((entry) => entry.event));
+    this.unresolvedStylesheets = this.stylesheets.unresolved;
+    this.droppedStylesheets = this.stylesheets.droppedTexts;
     this.tracks = mergeReplayEvents(this.known, decoded);
     this.replayCursorNs = maxNs(this.replayCursorNs, lines);
     this.lastReplayMs = this.replayCursorNs ? nsToMs(this.replayCursorNs) : undefined;

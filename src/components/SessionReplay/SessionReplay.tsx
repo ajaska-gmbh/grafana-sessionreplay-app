@@ -5,6 +5,7 @@ import { getAppEvents } from '@grafana/runtime';
 import { Alert, Button, LoadingPlaceholder, RadioButtonGroup, useStyles2 } from '@grafana/ui';
 import { useSessionData } from '../../hooks/useSessionData';
 import { formatClock, replayUrl } from '../../lib/format';
+import { linkOffset } from '../../lib/playerEvents';
 import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
 import type { JourneyEvent } from '../../lib/journey';
 import { UserJourney } from '../Journey/UserJourney';
@@ -68,6 +69,9 @@ export function SessionReplay(props: SessionReplayProps) {
   const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
   const events = useMemo(() => data.tracks[track] ?? [], [data.tracks, track]);
   const recordingStartMs = events[0]?.timestamp;
+  // The link's `t` counts from where its own range started; loading may start earlier.
+  const linkStartOffset = linkOffset(events, from, t);
+  const initialOffsetMs = track !== (props.track ?? 0) ? 0 : (linkStartOffset ?? (data.loadingReplay ? undefined : t));
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
@@ -164,11 +168,11 @@ export function SessionReplay(props: SessionReplayProps) {
             )}
           </div>
         )}
-        {events.length > 0 ? (
+        {events.length > 0 && initialOffsetMs !== undefined ? (
           <ReplayPlayer
             key={`${track}-${live ? 'live' : 'replay'}`}
             events={events}
-            initialOffsetMs={track === (props.track ?? 0) ? t : 0}
+            initialOffsetMs={initialOffsetMs}
             seekRequest={seekRequest}
             markers={markers}
             onTimeChange={onTimeChange}
@@ -187,6 +191,13 @@ export function SessionReplay(props: SessionReplayProps) {
         {data.skippedEvents > 0 && (
           <div className={styles.note}>
             {data.skippedEvents} recording events could not be decoded and were skipped.
+          </div>
+        )}
+        {data.unresolvedStylesheets > 0 && (
+          <div className={styles.note}>
+            {data.unresolvedStylesheets} stylesheets of this recording could not be restored
+            {data.droppedStylesheets > 0 && ` (${data.droppedStylesheets} exceeded the viewer's memory limit)`}; parts
+            of the page may look unstyled.
           </div>
         )}
       </div>
