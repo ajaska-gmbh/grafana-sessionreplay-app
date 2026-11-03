@@ -88,7 +88,7 @@ describe('dialer audio levels', () => {
   it('still shows an idle microphone silence warning as an error', () => {
     expect(toJourneyEvent('1', idleMicSilentLine, SESSION_ID)).toMatchObject({
       category: 'error',
-      title: '[PPD] Twilio mic silent (idle)',
+      title: '[PPD] Twilio agent mic silent (idle)',
     });
   });
 
@@ -102,7 +102,7 @@ describe('dialer audio levels', () => {
   it('still shows a silence warning as an error', () => {
     expect(toJourneyEvent('1', micSilentLine, SESSION_ID)).toMatchObject({
       category: 'error',
-      title: '[PPD] Twilio mic silent',
+      title: '[PPD] Twilio agent mic silent',
       detail: 'warn',
     });
   });
@@ -117,7 +117,7 @@ describe('dialer audio levels', () => {
       SESSION_ID
     );
 
-    expect(journey.map((event) => event.title)).toEqual(['[PPD] Twilio lifecycle', '[PPD] Twilio mic silent']);
+    expect(journey.map((event) => event.title)).toEqual(['[PPD] Twilio lifecycle', '[PPD] Twilio agent mic silent']);
   });
 });
 
