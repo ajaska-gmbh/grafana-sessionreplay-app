@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { eventWithTime } from '@grafana/rrweb-types';
-import { REPLAY_PAGE_SIZE } from '../constants';
+import { CLOCK_SLACK_MS, MAX_SESSION_MS, REPLAY_PAGE_SIZE } from '../constants';
 import type { JourneyEvent } from '../lib/journey';
 import { createLokiFetcher, readForward, type LokiFetcher } from '../lib/loki';
 import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
-import { REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
+import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import { SessionStore } from '../lib/sessionStore';
 
 /** How often live mode asks Loki for new events. */
@@ -23,6 +23,8 @@ export interface SessionDataState {
   loadingReplay: boolean;
   loadingJourney: boolean;
   skippedEvents: number;
+  unresolvedStylesheets: number;
+  droppedStylesheets: number;
   /** Loki time of the newest replay line (epoch ms); decides whether live is offered. */
   lastReplayMs?: number;
   error?: string;
@@ -49,6 +51,26 @@ async function locateSession(
     }
   }
   return undefined;
+}
+
+/**
+ * The session's recordings as seen from a link's own range: its start markers
+ * up to Faro's maximum session length before the range. Undefined if none.
+ */
+export async function findSessionAround(
+  fetcher: LokiFetcher,
+  sessionId: string,
+  link: { from: number; to: number }
+): Promise<SessionSummary | undefined> {
+  const expr = STREAMS.markers + eventLineFilter(REPLAY_STARTED_EVENT) + sessionLineFilter(sessionId);
+  const lines = await fetcher({
+    expr,
+    fromMs: link.from - MAX_SESSION_MS - CLOCK_SLACK_MS,
+    toMs: link.to,
+    limit: 1000,
+    direction: 'forward',
+  });
+  return summariseSessions(lines).find((candidate) => candidate.sessionId === sessionId);
 }
 
 function errorMessage(error: unknown): string {
@@ -79,6 +101,8 @@ export function useSessionData(params: {
     loadingReplay: true,
     loadingJourney: true,
     skippedEvents: 0,
+    unresolvedStylesheets: 0,
+    droppedStylesheets: 0,
     notFound: false,
   });
 
@@ -97,15 +121,20 @@ export function useSessionData(params: {
         tracks: store.tracks,
         journey: store.journey,
         skippedEvents: store.skipped,
+        unresolvedStylesheets: store.unresolvedStylesheets,
+        droppedStylesheets: store.droppedStylesheets,
         lastReplayMs: store.lastReplayMs,
       });
 
     (async () => {
       const nowMs = Date.now();
-      let range = from !== undefined && to !== undefined ? { from, to } : undefined;
+      let range: { from: number; to: number } | undefined;
       let session: SessionSummary | undefined;
 
-      if (!range) {
+      if (from !== undefined && to !== undefined) {
+        // Load from the session's first recording start even if the link starts later.
+        range = loadRange({ from, to }, await findSessionAround(fetcher, sessionId, { from, to }));
+      } else {
         session = await locateSession(fetcher, sessionId, nowMs);
         if (!session) {
           update({ notFound: true, loadingReplay: false, loadingJourney: false });
@@ -183,6 +212,8 @@ export function useSessionData(params: {
             tracks: store.tracks,
             journey: store.journey,
             skippedEvents: store.skipped,
+            unresolvedStylesheets: store.unresolvedStylesheets,
+            droppedStylesheets: store.droppedStylesheets,
             lastReplayMs: store.lastReplayMs,
             liveError: undefined,
           }));
