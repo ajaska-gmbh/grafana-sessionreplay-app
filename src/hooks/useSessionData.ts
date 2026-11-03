@@ -6,6 +6,7 @@ import { createLokiFetcher, readForward, type LokiFetcher } from '../lib/loki';
 import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import { SessionStore } from '../lib/sessionStore';
+import { journeyQuery } from '../lib/journeyQuery';
 
 /** How often live mode asks Loki for new events. */
 export const LIVE_POLL_MS = 3000;
@@ -157,7 +158,7 @@ export function useSessionData(params: {
       })();
 
       const journey = (async () => {
-        const expr = STREAMS.faro + sessionLineFilter(sessionId);
+        const expr = journeyQuery(sessionId);
         for await (const page of readForward(fetcher, expr, range.from, range.to)) {
           if (cancelled) {
             return;
@@ -192,7 +193,7 @@ export function useSessionData(params: {
       const nowMs = Date.now();
       const fallbackMs = nowMs - LIVE_POLL_MS * 2;
       const replayExpr = STREAMS.payloads + sessionLineFilter(sessionId);
-      const journeyExpr = STREAMS.faro + sessionLineFilter(sessionId);
+      const journeyExpr = journeyQuery(sessionId);
       try {
         for await (const page of readForward(
           fetcher,

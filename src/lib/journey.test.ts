@@ -1,8 +1,12 @@
 import { buildJourney, faroTimeMs, toJourneyEvent } from './journey';
 import {
+  audioLevelLine,
   exceptionLine,
+  idleMicLevelLine,
+  idleMicSilentLine,
   fetchLine,
   logLine,
+  micSilentLine,
   replayLine,
   resourceLine,
   routeLine,
@@ -68,6 +72,52 @@ describe('toJourneyEvent', () => {
     expect(toJourneyEvent('1', replayLine({ type: 2, timestamp: 1, data: {} }), SESSION_ID)).toBeUndefined();
     expect(toJourneyEvent('1', resourceLine, SESSION_ID)).toBeUndefined();
     expect(toJourneyEvent('1', logLine, 'someoneElse')).toBeUndefined();
+  });
+});
+
+describe('dialer audio levels', () => {
+  it('hides the per-call audio level measurements, which arrive every second', () => {
+    expect(toJourneyEvent('1', audioLevelLine('twilio_audio_level'), SESSION_ID)).toBeUndefined();
+    expect(toJourneyEvent('1', audioLevelLine('telnyx_audio_level'), SESSION_ID)).toBeUndefined();
+  });
+
+  it('hides the idle microphone level measurements too', () => {
+    expect(toJourneyEvent('1', idleMicLevelLine, SESSION_ID)).toBeUndefined();
+  });
+
+  it('still shows an idle microphone silence warning as an error', () => {
+    expect(toJourneyEvent('1', idleMicSilentLine, SESSION_ID)).toMatchObject({
+      category: 'error',
+      title: '[PPD] Twilio agent mic silent (idle)',
+    });
+  });
+
+  it('still shows other measurements', () => {
+    expect(toJourneyEvent('1', audioLevelLine('leads_iframe_load'), SESSION_ID)).toMatchObject({
+      category: 'custom',
+      title: 'leads_iframe_load',
+    });
+  });
+
+  it('still shows a silence warning as an error', () => {
+    expect(toJourneyEvent('1', micSilentLine, SESSION_ID)).toMatchObject({
+      category: 'error',
+      title: '[PPD] Twilio agent mic silent',
+      detail: 'warn',
+    });
+  });
+
+  it('leaves the rest of the session around the measurements in the journey', () => {
+    const journey = buildJourney(
+      [
+        { tsNs: '1', line: logLine },
+        { tsNs: '2', line: audioLevelLine('twilio_audio_level') },
+        { tsNs: '3', line: micSilentLine },
+      ],
+      SESSION_ID
+    );
+
+    expect(journey.map((event) => event.title)).toEqual(['[PPD] Twilio lifecycle', '[PPD] Twilio agent mic silent']);
   });
 });
 

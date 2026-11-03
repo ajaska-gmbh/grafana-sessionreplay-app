@@ -22,6 +22,17 @@ const HIDDEN_EVENTS = new Set([
   'faro.performance.resource',
 ]);
 
+/**
+ * Measurements that never appear in the journey: the dialer's audio levels
+ * (per call, and of the idle microphone) arrive every second and would bury
+ * everything else. Their silence warnings are logs and still show as errors.
+ *
+ * The journey query already leaves them out (journeyQuery); this is the
+ * safety net for any line that still gets through.
+ */
+export const HIDDEN_MEASUREMENT_TYPES = ['twilio_audio_level', 'telnyx_audio_level', 'twilio_mic_level_idle'] as const;
+const HIDDEN_MEASUREMENTS = new Set<string>(HIDDEN_MEASUREMENT_TYPES);
+
 const NAVIGATION_EVENTS = new Set([
   'session_start',
   'session_resume',
@@ -124,6 +135,9 @@ export function toJourneyEvent(tsNs: string, line: string, sessionId: string): J
       };
     }
     case 'measurement': {
+      if (HIDDEN_MEASUREMENTS.has(fields.type ?? '')) {
+        return undefined;
+      }
       const vital = fields.type === 'web-vitals' ? WEB_VITALS.find(([key]) => fields[`value_${key}`]) : undefined;
       if (vital) {
         const [key, label] = vital;

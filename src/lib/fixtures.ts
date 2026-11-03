@@ -18,6 +18,25 @@ export const exceptionLine =
   'stacktrace="Error: console.error: Error updating user state\\n  at ? (https://ppd.ajaska.de/build/assets/app.js:71:2349)\\n  at Array.forEach (\\u003canonymous\\u003e:0:0)" ' +
   `hash=12651449463755804055 traceID=6f3bcc02329606149b345051f07ec85e ${meta}`;
 
+export const audioLevelLine = (type: string) =>
+  `timestamp="2026-11-03 12:37:20.000 +0000 UTC" kind=measurement type=${type} ` +
+  'value_agent_mic_avg=0.21 value_agent_mic_max=0.48 value_customer_audio_avg=0.17 value_customer_audio_max=0.44 ' +
+  'value_agent_mic_silent_ratio=0 value_customer_audio_silent_ratio=0.1 value_samples=20 value_window_ms=1000 ' +
+  `context_context=agent-conference context_callSid=CA123 context_direction=OUTGOING context_phase=call ${meta}`;
+
+export const micSilentLine =
+  'timestamp="2026-11-03 12:37:28.000 +0000 UTC" kind=log message="[PPD] Twilio agent mic silent" level=warn ' +
+  `context_callSid=CA123 context_channel=agent_mic context_silentForMs=8000 ${meta}`;
+
+export const idleMicLevelLine =
+  'timestamp="2026-11-03 12:37:21.000 +0000 UTC" kind=measurement type=twilio_mic_level_idle ' +
+  'value_agent_mic_avg=0.18 value_agent_mic_max=0.41 value_agent_mic_silent_ratio=0 value_samples=60 value_window_ms=1000 ' +
+  `context_phase=idle ${meta}`;
+
+export const idleMicSilentLine =
+  'timestamp="2026-11-03 12:37:29.000 +0000 UTC" kind=log message="[PPD] Twilio agent mic silent (idle)" level=warn ' +
+  `context_phase=idle context_channel=agent_mic context_silentForMs=8000 ${meta}`;
+
 export const webVitalLine =
   'timestamp="2026-11-03 12:37:14.016 +0000 UTC" kind=measurement type=web-vitals cls=0.014845 ' +
   'context_rating=good value_cls=0.014844889771139692 value_delta=0.0011547316454430957 ' +
