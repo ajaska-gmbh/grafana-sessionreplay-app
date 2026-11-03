@@ -1,8 +1,9 @@
-# Builds, privately signs and publishes the plugin on a version tag (v1.2.3).
-# The signature is only valid for the root URLs below; Grafana refuses to load
-# the plugin anywhere else. Requires the repository secret
-# GRAFANA_ACCESS_POLICY_TOKEN (Grafana Cloud access policy, scope plugins:write,
-# created in the org whose slug prefixes the plugin id).
+# Builds and publishes the plugin on a version tag (v1.2.3).
+# With the repository secret GRAFANA_ACCESS_POLICY_TOKEN (Grafana Cloud access
+# policy, scope plugins:write, from the org whose slug prefixes the plugin id)
+# the zip is privately signed for the root URLs below; Grafana refuses to load
+# it anywhere else. Without the secret the zip is unsigned and only loads where
+# allow_loading_unsigned_plugins lists the plugin id.
 name: Release
 
 on:
@@ -15,6 +16,7 @@ permissions:
 
 env:
   ROOT_URLS: https://grafana.ajaska.de/,https://internalajaska.grafana.net/
+  SIGN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
 
 jobs:
   release:
@@ -45,6 +47,7 @@ jobs:
       - run: npm run build
 
       - name: Sign (private, for our Grafana instances)
+        if: env.SIGN == 'true'
         # The signer from package-lock (not @latest): it receives the signing token.
         run: npm run sign -- --rootUrls "${ROOT_URLS}"
         env:
@@ -62,4 +65,5 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             "${PLUGIN_ID}-${VERSION}.zip" "${PLUGIN_ID}-${VERSION}.zip.sha1" \
-            --title "${GITHUB_REF_NAME}" --generate-notes
+            --title "${GITHUB_REF_NAME}" --generate-notes \
+            --notes "Signed: ${SIGN} (unsigned builds need allow_loading_unsigned_plugins = ajaska-sessionreplay-app)"

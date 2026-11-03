@@ -104,14 +104,17 @@ personal data, so restrict access the same way you restrict Explore on Loki.
 
 ## Install
 
-Releases are privately signed for `https://grafana.ajaska.de/` and
-`https://internalajaska.grafana.net/`. For kube-prometheus-stack:
+Signed releases are privately signed for `https://grafana.ajaska.de/` and
+`https://internalajaska.grafana.net/`; releases built without the signing secret
+are unsigned (the release notes say which). For kube-prometheus-stack:
 
 ```yaml
 grafana:
   grafana.ini:
     server:
       root_url: https://grafana.ajaska.de/ # must match the signature
+    plugins:
+      allow_loading_unsigned_plugins: ajaska-sessionreplay-app # only for unsigned releases
   plugins:
     - https://github.com/ajaska-gmbh/grafana-sessionreplay-app/releases/download/v0.1.0/ajaska-sessionreplay-app-0.1.0.zip;ajaska-sessionreplay-app
 ```
