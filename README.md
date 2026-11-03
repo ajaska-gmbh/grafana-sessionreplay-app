@@ -22,6 +22,9 @@ Grafana Cloud collector.
   - per event: offset, _Jump to this event_ and the details, with a link to the
     trace in Tempo;
   - **Follow playback** keeps the list in sync with the player.
+- **Session-only links**: `/a/ajaska-sessionreplay-app/session/<session_id>` looks up the app
+  and opens the viewer. Use it from a Loki derived field (`session_id=(\w+)`), so every
+  Faro log line in Explore links to its replay.
 - **Embeddable player**: other plugins can render
   `ajaska-sessionreplay-app/replay-player/v1` with `{ appName, sessionId, from?, to?, t?, height? }`.
 

@@ -26,16 +26,18 @@ export async function fetchAppNames(lokiUid: string, fromMs: number, toMs: numbe
   return [...(response.data ?? [])].sort();
 }
 
-/** Sessions with a replay recording in the range, newest first. */
+/** Sessions with a replay recording in the range, newest first; optionally only one session. */
 export async function fetchSessions(
   lokiUid: string,
   apps: string[],
   fromMs: number,
   toMs: number,
-  limit = 5000
+  limit = 5000,
+  sessionId?: string
 ): Promise<SessionSummary[]> {
   const fetcher = createLokiFetcher(lokiUid);
-  const expr = `${faroSelector(apps)} |= ${logqlString(`event_name=${REPLAY_STARTED_EVENT}`)}`;
+  const sessionFilter = sessionId ? ` |= ${logqlString(`session_id=${sessionId}`)}` : '';
+  const expr = `${faroSelector(apps)} |= ${logqlString(`event_name=${REPLAY_STARTED_EVENT}`)}${sessionFilter}`;
   const lines = await fetcher({ expr, fromMs, toMs, limit, direction: 'backward' });
   return summariseSessions(lines);
 }
