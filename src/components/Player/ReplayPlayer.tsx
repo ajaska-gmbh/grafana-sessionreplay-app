@@ -4,13 +4,15 @@ import { Replayer } from '@grafana/rrweb';
 import './rrweb.css';
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { GrafanaTheme2 } from '@grafana/data';
-import { Dropdown, IconButton, Menu, ToolbarButton, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
+import { Badge, Dropdown, IconButton, Menu, ToolbarButton, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
 import { formatClock } from '../../lib/format';
-import { RRWEB_META } from '../../lib/replayEvents';
+import { liveStartIndex, pageAt, pageChanges } from '../../lib/playerEvents';
 import { testIds } from '../testIds';
 
 export const SPEEDS = [0.5, 1, 2, 4, 8];
 const SKIP_MS = 10_000;
+/** Live playback trails the newest event by this much, so late batches still play in order. */
+export const LIVE_BUFFER_MS = 3000;
 
 export interface TimelineMarker {
   offsetMs: number;
@@ -33,35 +35,19 @@ export interface ReplayPlayerProps {
   onTimeChange?: (offsetMs: number, startTimeMs: number) => void;
   onShare?: (offsetMs: number) => Promise<void> | void;
   autoPlay?: boolean;
+  /**
+   * Follow the session as it is recorded: starts at the last full snapshot and
+   * plays every appended event LIVE_BUFFER_MS behind the newest one.
+   */
+  live?: boolean;
+  /** Live: Loki receive time (epoch ms) of the newest event, to estimate the real lag. */
+  liveReceivedAtMs?: number;
+  onExitLive?: () => void;
 }
 
 interface PageInfo {
   title?: string;
   url?: string;
-}
-
-export interface PageChange {
-  timestamp: number;
-  href?: string;
-}
-
-/** Page loads in the recording: every Meta event carries the page URL. */
-export function pageChanges(events: eventWithTime[]): PageChange[] {
-  return events
-    .filter((event) => event.type === RRWEB_META)
-    .map((event) => ({ timestamp: event.timestamp, href: (event.data as { href?: string }).href }));
-}
-
-/** URL of the page the user was on at `timestamp` (changes sorted by time). */
-export function pageAt(changes: PageChange[], timestamp: number): string | undefined {
-  let href: string | undefined;
-  for (const change of changes) {
-    if (change.timestamp > timestamp) {
-      break;
-    }
-    href = change.href;
-  }
-  return href;
 }
 
 /**
@@ -77,6 +63,9 @@ export function ReplayPlayer({
   onTimeChange,
   onShare,
   autoPlay = false,
+  live = false,
+  liveReceivedAtMs,
+  onExitLive,
 }: ReplayPlayerProps) {
   const styles = useStyles2(getStyles);
   const theme = useTheme2();
@@ -101,6 +90,13 @@ export function ReplayPlayer({
   const [skipping, setSkipping] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [page, setPage] = useState<PageInfo>({});
+  /** Live: how far playback trails the newest received event (ms). */
+  const [liveLagMs, setLiveLagMs] = useState(0);
+  const newestEventRef = useRef(0);
+  const receivedAtRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    receivedAtRef.current = liveReceivedAtMs;
+  }, [liveReceivedAtMs]);
 
   const pages = useMemo(() => pageChanges(events), [events]);
 
@@ -121,7 +117,8 @@ export function ReplayPlayer({
 
   const syncTime = useCallback(() => {
     const replayer = replayerRef.current;
-    if (!replayer) {
+    // In live mode rrweb adds events asynchronously; its metadata needs at least one.
+    if (!replayer || replayer.service.state.context.events.length === 0) {
       return;
     }
     const meta = replayer.getMetaData();
@@ -129,11 +126,17 @@ export function ReplayPlayer({
     setOffset(current);
     setTotal(meta.totalTime);
     onTimeChange?.(current, meta.startTime);
+    if (live) {
+      // Playback trails the newest event (buffer), which itself arrived some time ago.
+      const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
+      const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;
+      setLiveLagMs(behindNewest + sinceReceived);
+    }
     setPage({
       url: pageAt(pages, meta.startTime + current),
       title: replayer.iframe.contentDocument?.title || undefined,
     });
-  }, [pages, onTimeChange]);
+  }, [pages, onTimeChange, live]);
 
   // Replayer callbacks are registered once; they read the latest sync via this ref.
   const syncRef = useRef(syncTime);
@@ -171,6 +174,38 @@ export function ReplayPlayer({
     }
 
     let replayer = replayerRef.current;
+    newestEventRef.current = Math.max(newestEventRef.current, events[events.length - 1].timestamp);
+    if (!replayer && live) {
+      // rrweb live mode: events before the baseline are applied at once, later
+      // ones are scheduled relative to it as they are added.
+      replayer = new Replayer([], {
+        root: mountRef.current,
+        liveMode: true,
+        // rrweb applies catch-up events to a virtual DOM and writes it to the page
+        // only on the Flush of normal playback, which never comes in live mode:
+        // the page would freeze at the snapshot. Apply them to the page directly.
+        useVirtualDom: false,
+        mouseTail: { strokeStyle: theme.colors.primary.main },
+        showWarning: false,
+        UNSAFE_replayCanvas: false,
+      });
+      replayerRef.current = replayer;
+      replayer.on('resize', (dimension) => {
+        viewportRef.current = dimension as { width: number; height: number };
+        rescale();
+      });
+      replayer.startLive(events[events.length - 1].timestamp - LIVE_BUFFER_MS);
+      const from = liveStartIndex(events);
+      events.forEach((event, index) => {
+        if (index >= from) {
+          replayer!.addEvent(event);
+        }
+        addedRef.current.add(event);
+      });
+      setPlaying(true);
+      startTicker();
+      return;
+    }
     if (!replayer) {
       replayer = new Replayer(events, {
         root: mountRef.current,
@@ -210,6 +245,16 @@ export function ReplayPlayer({
         replayer.pause(start);
       }
       scheduleSync();
+      return;
+    }
+
+    if (live) {
+      for (const event of events) {
+        if (!addedRef.current.has(event)) {
+          replayer.addEvent(event);
+          addedRef.current.add(event);
+        }
+      }
       return;
     }
 
@@ -347,75 +392,105 @@ export function ReplayPlayer({
         {skipping && <div className={styles.skipping}>Skipping inactivity…</div>}
       </div>
 
-      <div className={styles.timeline}>
-        <input
-          type="range"
-          aria-label="Timeline"
-          className={styles.range}
-          min={0}
-          max={Math.max(total, 1)}
-          step={100}
-          value={Math.min(offset, total)}
-          onChange={(event) => seek(Number(event.currentTarget.value))}
-          data-testid={testIds.player.timeline}
-        />
-        {total > 0 &&
-          markers.map((marker, index) => (
-            <Tooltip key={`${marker.offsetMs}-${index}`} content={marker.title}>
-              <button
-                type="button"
-                aria-label={marker.title}
-                className={cx(styles.marker, marker.kind === 'error' ? styles.markerError : styles.markerNavigation)}
-                style={{ left: `${Math.min(100, Math.max(0, (marker.offsetMs / total) * 100))}%` }}
-                onClick={() => seek(marker.offsetMs)}
-              />
-            </Tooltip>
-          ))}
-      </div>
+      {live ? (
+        <div className={styles.controls}>
+          <Badge text="LIVE" color="red" icon="circle-mono" />
+          <span className={styles.clock} data-testid={testIds.player.clock}>
+            {liveLagMs < 60_000 ? `~${Math.round(liveLagMs / 1000)} s behind` : `~${formatClock(liveLagMs)} behind`}
+          </span>
+          <div className={styles.spacer} />
+          {onExitLive && (
+            <ToolbarButton
+              icon="history-alt"
+              variant="canvas"
+              tooltip="Back to the full recording"
+              onClick={onExitLive}
+            >
+              Exit live
+            </ToolbarButton>
+          )}
+          <IconButton
+            name={fullscreen ? 'compress-arrows' : 'expand-arrows'}
+            tooltip="Toggle fullscreen"
+            onClick={toggleFullscreen}
+          />
+        </div>
+      ) : (
+        <>
+          <div className={styles.timeline}>
+            <input
+              type="range"
+              aria-label="Timeline"
+              className={styles.range}
+              min={0}
+              max={Math.max(total, 1)}
+              step={100}
+              value={Math.min(offset, total)}
+              onChange={(event) => seek(Number(event.currentTarget.value))}
+              data-testid={testIds.player.timeline}
+            />
+            {total > 0 &&
+              markers.map((marker, index) => (
+                <Tooltip key={`${marker.offsetMs}-${index}`} content={marker.title}>
+                  <button
+                    type="button"
+                    aria-label={marker.title}
+                    className={cx(
+                      styles.marker,
+                      marker.kind === 'error' ? styles.markerError : styles.markerNavigation
+                    )}
+                    style={{ left: `${Math.min(100, Math.max(0, (marker.offsetMs / total) * 100))}%` }}
+                    onClick={() => seek(marker.offsetMs)}
+                  />
+                </Tooltip>
+              ))}
+          </div>
 
-      <div className={styles.controls}>
-        <span className={styles.clock} data-testid={testIds.player.clock}>
-          {formatClock(offset)} / {formatClock(total)}
-        </span>
-        <IconButton name="backward" tooltip="Skip backward 10 seconds" onClick={() => seek(offset - SKIP_MS)} />
-        <IconButton
-          name={playing ? 'pause' : 'play'}
-          size="xl"
-          tooltip={playing ? 'Pause' : 'Play'}
-          onClick={togglePlay}
-          data-testid={testIds.player.play}
-        />
-        <IconButton name="forward" tooltip="Skip forward 10 seconds" onClick={() => seek(offset + SKIP_MS)} />
-        <div className={styles.spacer} />
-        <Dropdown overlay={speedMenu} placement="top">
-          <ToolbarButton variant="canvas" tooltip="Playback speed">
-            {speed}x
-          </ToolbarButton>
-        </Dropdown>
-        <ToolbarButton
-          icon="angle-double-right"
-          variant={skipInactive ? 'active' : 'canvas'}
-          tooltip="Skip inactivity"
-          onClick={toggleSkipInactive}
-        >
-          Skip inactivity
-        </ToolbarButton>
-        {onShare && (
-          <ToolbarButton
-            icon="share-alt"
-            variant="canvas"
-            tooltip="Copy a link to this moment"
-            onClick={() => onShare(offset)}
-          >
-            Share
-          </ToolbarButton>
-        )}
-        <IconButton
-          name={fullscreen ? 'compress-arrows' : 'expand-arrows'}
-          tooltip="Toggle fullscreen"
-          onClick={toggleFullscreen}
-        />
-      </div>
+          <div className={styles.controls}>
+            <span className={styles.clock} data-testid={testIds.player.clock}>
+              {formatClock(offset)} / {formatClock(total)}
+            </span>
+            <IconButton name="backward" tooltip="Skip backward 10 seconds" onClick={() => seek(offset - SKIP_MS)} />
+            <IconButton
+              name={playing ? 'pause' : 'play'}
+              size="xl"
+              tooltip={playing ? 'Pause' : 'Play'}
+              onClick={togglePlay}
+              data-testid={testIds.player.play}
+            />
+            <IconButton name="forward" tooltip="Skip forward 10 seconds" onClick={() => seek(offset + SKIP_MS)} />
+            <div className={styles.spacer} />
+            <Dropdown overlay={speedMenu} placement="top">
+              <ToolbarButton variant="canvas" tooltip="Playback speed">
+                {speed}x
+              </ToolbarButton>
+            </Dropdown>
+            <ToolbarButton
+              icon="angle-double-right"
+              variant={skipInactive ? 'active' : 'canvas'}
+              tooltip="Skip inactivity"
+              onClick={toggleSkipInactive}
+            >
+              Skip inactivity
+            </ToolbarButton>
+            {onShare && (
+              <ToolbarButton
+                icon="share-alt"
+                variant="canvas"
+                tooltip="Copy a link to this moment"
+                onClick={() => onShare(offset)}
+              >
+                Share
+              </ToolbarButton>
+            )}
+            <IconButton
+              name={fullscreen ? 'compress-arrows' : 'expand-arrows'}
+              tooltip="Toggle fullscreen"
+              onClick={toggleFullscreen}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

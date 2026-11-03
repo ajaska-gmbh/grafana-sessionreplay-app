@@ -19,7 +19,8 @@ import {
 } from '@grafana/ui';
 import { useSettings } from '../hooks/useSettings';
 import { replayUrl } from '../lib/format';
-import { fetchAppNames, fetchErrorCounts, fetchSessions } from '../lib/sessionQueries';
+import { fetchActiveSessionIds, fetchAppNames, fetchErrorCounts, fetchSessions } from '../lib/sessionQueries';
+import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
 
@@ -32,7 +33,7 @@ const LOOKBACKS: Array<ComboboxOption<number>> = [
   { label: 'Last 14 days', value: 14 * 24 * 3600_000 },
 ];
 
-type Row = SessionSummary & { id: string };
+type Row = SessionSummary & { id: string; live: boolean };
 
 interface QueryResult {
   key: string;
@@ -40,6 +41,7 @@ interface QueryResult {
   sessions: SessionSummary[];
   truncated?: boolean;
   errors: Map<string, number>;
+  active: Set<string>;
   failure?: string;
 }
 
@@ -57,6 +59,7 @@ function SessionsPage() {
   const loading = result?.key !== queryKey;
   const sessions = useMemo(() => result?.sessions ?? [], [result]);
   const errors = useMemo(() => result?.errors ?? new Map<string, number>(), [result]);
+  const active = useMemo(() => result?.active ?? new Set<string>(), [result]);
   const nowMs = result?.nowMs ?? 0;
   const failure = loading ? undefined : result?.failure;
 
@@ -75,16 +78,24 @@ function SessionsPage() {
     Promise.all([
       fetchSessions(lokiUid, apps, now - lookback, now),
       fetchErrorCounts(lokiUid, apps, now - lookback, now).catch(() => new Map<string, number>()),
+      fetchActiveSessionIds(lokiUid, apps, now, LIVE_WINDOW_MS).catch(() => new Set<string>()),
     ])
-      .then(([found, errorCounts]) => {
+      .then(([found, errorCounts, active]) => {
         if (!cancelled) {
-          setResult({ key, nowMs: now, sessions: found.sessions, truncated: found.truncated, errors: errorCounts });
+          setResult({
+            key,
+            nowMs: now,
+            sessions: found.sessions,
+            truncated: found.truncated,
+            errors: errorCounts,
+            active,
+          });
         }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
           const failureText = (error as { data?: { message?: string } })?.data?.message ?? String(error);
-          setResult({ key, nowMs: now, sessions: [], errors: new Map(), failure: failureText });
+          setResult({ key, nowMs: now, sessions: [], errors: new Map(), active: new Set(), failure: failureText });
         }
       });
 
@@ -103,8 +114,13 @@ function SessionsPage() {
       sessions
         .filter((session) => !environment || session.environment === environment)
         .filter((session) => matchesSearch(session, search))
-        .map((session) => ({ ...session, id: session.sessionId, errors: errors.get(session.sessionId) ?? 0 })),
-    [sessions, environment, search, errors]
+        .map((session) => ({
+          ...session,
+          id: session.sessionId,
+          errors: errors.get(session.sessionId) ?? 0,
+          live: active.has(session.sessionId),
+        })),
+    [sessions, environment, search, errors, active]
   );
 
   const columns = useMemo<Array<Column<Row>>>(
@@ -155,14 +171,30 @@ function SessionsPage() {
         id: 'replay',
         header: 'Session replay',
         cell: ({ row }) => (
-          <LinkButton
-            size="sm"
-            icon="play"
-            variant="secondary"
-            href={replayUrl(row.original.appName, row.original.sessionId, sessionRange(row.original, nowMs))}
-          >
-            Replay
-          </LinkButton>
+          <Stack gap={1}>
+            <LinkButton
+              size="sm"
+              icon="play"
+              variant="secondary"
+              href={replayUrl(row.original.appName, row.original.sessionId, sessionRange(row.original, nowMs))}
+            >
+              Replay
+            </LinkButton>
+            {row.original.live && (
+              <LinkButton
+                size="sm"
+                icon="circle-mono"
+                variant="destructive"
+                tooltip="Recording right now: follow it live"
+                href={replayUrl(row.original.appName, row.original.sessionId, {
+                  ...sessionRange(row.original, nowMs),
+                  live: true,
+                })}
+              >
+                Live
+              </LinkButton>
+            )}
+          </Stack>
         ),
       },
     ],

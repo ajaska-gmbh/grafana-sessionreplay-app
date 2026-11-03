@@ -67,6 +67,9 @@ describe('format', () => {
       '/a/ajaska-sessionreplay-app/app/ppd-leads-frontend/session/abc?t=41615&from=1&to=2'
     );
     expect(replayUrl('a', 'b', { track: 1 })).toBe('/a/ajaska-sessionreplay-app/app/a/session/b?track=1');
+    expect(replayUrl('a', 'b', { from: 1, to: 2, live: true })).toBe(
+      '/a/ajaska-sessionreplay-app/app/a/session/b?from=1&to=2&live=1'
+    );
     expect(replayUrl('a b', 'c/d')).toBe('/a/ajaska-sessionreplay-app/app/a%20b/session/c%2Fd');
   });
 

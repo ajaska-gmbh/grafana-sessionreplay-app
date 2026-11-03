@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { REPLAY_PAGE_SIZE } from '../constants';
-import { buildJourney, type JourneyEvent } from '../lib/journey';
+import type { JourneyEvent } from '../lib/journey';
 import { createLokiFetcher, readForward, type LokiFetcher } from '../lib/loki';
 import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
-import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from '../lib/replayEvents';
 import { REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
-import type { LokiLine } from '../types';
+import { SessionStore } from '../lib/sessionStore';
+
+/** How often live mode asks Loki for new events. */
+export const LIVE_POLL_MS = 3000;
 
 export interface SessionDataState {
   /** Resolved time range of the session (epoch ms). */
@@ -21,7 +23,11 @@ export interface SessionDataState {
   loadingReplay: boolean;
   loadingJourney: boolean;
   skippedEvents: number;
+  /** Loki time of the newest replay line (epoch ms); decides whether live is offered. */
+  lastReplayMs?: number;
   error?: string;
+  /** Last failed live poll; transient, the next poll retries. */
+  liveError?: string;
   notFound: boolean;
 }
 
@@ -45,18 +51,28 @@ async function locateSession(
   return undefined;
 }
 
+function errorMessage(error: unknown): string {
+  return (
+    (error as { data?: { message?: string } })?.data?.message ??
+    (error instanceof Error ? error.message : String(error))
+  );
+}
+
 /**
- * Load one session's replay and journey. State is not reset when the
- * parameters change: render the consumer with a `key` per session instead.
+ * Load one session's replay and journey; with `live`, keep polling Loki for
+ * the newest events. State is not reset when the session changes: render the
+ * consumer with a `key` per session instead.
  */
 export function useSessionData(params: {
   lokiUid: string;
   sessionId: string;
   from?: number;
   to?: number;
+  live?: boolean;
 }): SessionDataState {
-  const { lokiUid, sessionId, from, to } = params;
+  const { lokiUid, sessionId, from, to, live = false } = params;
   const fetcher = useMemo(() => createLokiFetcher(lokiUid), [lokiUid]);
+  const storeRef = useRef<SessionStore | null>(null);
   const [state, setState] = useState<SessionDataState>({
     tracks: [],
     journey: [],
@@ -66,13 +82,23 @@ export function useSessionData(params: {
     notFound: false,
   });
 
+  // Initial load of the session's time range.
   useEffect(() => {
     let cancelled = false;
+    const store = new SessionStore(sessionId);
+    storeRef.current = store;
     const update = (patch: Partial<SessionDataState>) => {
       if (!cancelled) {
         setState((previous) => ({ ...previous, ...patch }));
       }
     };
+    const publish = () =>
+      update({
+        tracks: store.tracks,
+        journey: store.journey,
+        skippedEvents: store.skipped,
+        lastReplayMs: store.lastReplayMs,
+      });
 
     (async () => {
       const nowMs = Date.now();
@@ -90,45 +116,95 @@ export function useSessionData(params: {
       update({ range, session });
 
       const replay = (async () => {
-        const known = new Map<string, DecodedReplayEvent>();
-        let skipped = 0;
         const expr = STREAMS.payloads + sessionLineFilter(sessionId);
         for await (const page of readForward(fetcher, expr, range.from, range.to, REPLAY_PAGE_SIZE)) {
-          const { decoded, skipped: pageSkipped } = decodeReplayLines(page, sessionId);
-          skipped += pageSkipped;
-          update({ tracks: mergeReplayEvents(known, decoded), skippedEvents: skipped });
           if (cancelled) {
             return;
           }
+          store.addReplayLines(page);
+          publish();
         }
         update({ loadingReplay: false });
       })();
 
       const journey = (async () => {
-        const lines: LokiLine[] = [];
         const expr = STREAMS.faro + sessionLineFilter(sessionId);
         for await (const page of readForward(fetcher, expr, range.from, range.to)) {
-          lines.push(...page);
-          update({ journey: buildJourney(lines, sessionId) });
           if (cancelled) {
             return;
           }
+          store.addJourneyLines(page);
+          publish();
         }
         update({ loadingJourney: false });
       })();
 
       await Promise.all([replay, journey]);
     })().catch((error: unknown) => {
-      const message =
-        (error as { data?: { message?: string } })?.data?.message ??
-        (error instanceof Error ? error.message : String(error));
-      update({ error: message, loadingReplay: false, loadingJourney: false });
+      update({ error: errorMessage(error), loadingReplay: false, loadingJourney: false });
     });
 
     return () => {
       cancelled = true;
     };
   }, [fetcher, sessionId, from, to]);
+
+  // Live mode: after the initial load, fetch what arrived since the cursors.
+  const initialDone = !state.loadingReplay && !state.loadingJourney;
+  useEffect(() => {
+    const store = storeRef.current;
+    if (!live || !initialDone || !store) {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      const nowMs = Date.now();
+      const fallbackMs = nowMs - LIVE_POLL_MS * 2;
+      const replayExpr = STREAMS.payloads + sessionLineFilter(sessionId);
+      const journeyExpr = STREAMS.faro + sessionLineFilter(sessionId);
+      try {
+        for await (const page of readForward(
+          fetcher,
+          replayExpr,
+          store.replayCursorMs(fallbackMs),
+          nowMs,
+          REPLAY_PAGE_SIZE
+        )) {
+          store.addReplayLines(page);
+        }
+        for await (const page of readForward(fetcher, journeyExpr, store.journeyCursorMs(fallbackMs), nowMs)) {
+          store.addJourneyLines(page);
+        }
+        if (!cancelled) {
+          setState((previous) => ({
+            ...previous,
+            tracks: store.tracks,
+            journey: store.journey,
+            skippedEvents: store.skipped,
+            lastReplayMs: store.lastReplayMs,
+            liveError: undefined,
+          }));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setState((previous) => ({ ...previous, liveError: errorMessage(error) }));
+        }
+      }
+      if (!cancelled) {
+        timer = setTimeout(poll, LIVE_POLL_MS);
+      }
+    };
+    timer = setTimeout(poll, 0);
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [live, initialDone, fetcher, sessionId]);
 
   return state;
 }

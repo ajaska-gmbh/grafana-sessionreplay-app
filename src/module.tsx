@@ -18,7 +18,10 @@ const AppConfig = (props: AppConfigProps) => (
   </Suspense>
 );
 
-export type ReplayPlayerV1Props = Pick<SessionReplayProps, 'appName' | 'sessionId' | 'from' | 'to' | 't' | 'height'>;
+export type ReplayPlayerV1Props = Pick<
+  SessionReplayProps,
+  'appName' | 'sessionId' | 'from' | 'to' | 't' | 'height' | 'live'
+>;
 
 /** Embeddable player + user journey, like grafana-sessionreplay-app/replay-player/v1. */
 function ReplayPlayerV1(props: ReplayPlayerV1Props) {

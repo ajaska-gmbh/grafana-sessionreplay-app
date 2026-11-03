@@ -98,3 +98,20 @@ export async function fetchErrorCounts(
   }
   return counts;
 }
+
+/** Sessions whose recording received data in the last `windowMs` (epoch ms "now" given). */
+export async function fetchActiveSessionIds(
+  lokiUid: string,
+  apps: string[],
+  nowMs: number,
+  windowMs: number
+): Promise<Set<string>> {
+  const expr = `sum by (session_id) (count_over_time(${STREAMS.payloads}${appFilter(apps)} | logfmt session_id [${Math.ceil(windowMs / 1000)}s]))`;
+  const series = await instantSeries(lokiUid, expr, nowMs - windowMs, nowMs);
+  return new Set(
+    series
+      .filter((entry) => entry.value > 0)
+      .map((entry) => entry.labels.session_id)
+      .filter(Boolean)
+  );
+}

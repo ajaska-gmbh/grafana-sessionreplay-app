@@ -22,6 +22,11 @@ Grafana Cloud collector.
   - per event: offset, _Jump to this event_ and the details, with a link to the
     trace in Tempo;
   - **Follow playback** keeps the list in sync with the player.
+- **Live**: sessions still being recorded show a **Live** button in the list and the
+  viewer. Live mode starts at the last DOM snapshot and follows the session about
+  5 seconds behind the user (polls Loki every 3 s, plays with a 3 s buffer); the
+  badge shows the current lag, **Exit live** returns to the full recording. Links
+  open live with `?live=1`.
 - **Session-only links**: `/a/ajaska-sessionreplay-app/session/<session_id>` looks up the app
   and opens the viewer. Use it from a Loki derived field (`session_id=(\w+)`), so every
   Faro log line in Explore links to its replay.

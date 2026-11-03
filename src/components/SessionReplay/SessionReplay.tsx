@@ -1,10 +1,11 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { css } from '@emotion/css';
 import { AppEvents, GrafanaTheme2 } from '@grafana/data';
 import { config, getAppEvents } from '@grafana/runtime';
-import { Alert, LoadingPlaceholder, RadioButtonGroup, useStyles2 } from '@grafana/ui';
+import { Alert, Button, LoadingPlaceholder, RadioButtonGroup, useStyles2 } from '@grafana/ui';
 import { useSessionData } from '../../hooks/useSessionData';
-import { replayUrl } from '../../lib/format';
+import { formatClock, replayUrl } from '../../lib/format';
+import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
 import type { JourneyEvent } from '../../lib/journey';
 import { UserJourney } from '../Journey/UserJourney';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
@@ -19,6 +20,8 @@ export interface SessionReplayProps {
   t?: number;
   /** Which tab to play when the session ran in several tabs at once (0-based). */
   track?: number;
+  /** Start in live mode (follow the session as it is recorded). */
+  live?: boolean;
   lokiUid: string;
   tempoUid: string;
   /** Height of the player + journey area; the full-screen page fills the view. */
@@ -39,10 +42,24 @@ export function shareLink(
   return `${window.location.origin}${config.appSubUrl ?? ''}${path}`;
 }
 
+/** Wall clock for "is this session still active", refreshed every few seconds. */
+function useNow(intervalMs = 5000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
 export function SessionReplay(props: SessionReplayProps) {
   const { appName, sessionId, from, to, t, lokiUid, tempoUid, height = '100%' } = props;
   const styles = useStyles2(getStyles);
-  const data = useSessionData({ lokiUid, sessionId, from, to });
+  const [live, setLive] = useState(props.live ?? false);
+  const data = useSessionData({ lokiUid, sessionId, from, to, live });
+  const now = useNow();
+  const sinceLastEventMs = data.lastReplayMs !== undefined ? now - data.lastReplayMs : undefined;
+  const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;
   const [seekRequest, setSeekRequest] = useState<SeekRequest>();
   const [playheadMs, setPlayheadMs] = useState<number>();
   const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
@@ -126,15 +143,38 @@ export function SessionReplay(props: SessionReplayProps) {
             />
           </div>
         )}
+        {(active || live) && events.length > 0 && (
+          <div className={styles.liveBar}>
+            {live ? (
+              <span>
+                Following the session live (new events every few seconds).
+                {sinceLastEventMs !== undefined && sinceLastEventMs > 30_000 && (
+                  <> No new recording data for {formatClock(sinceLastEventMs)}: the user may be idle or gone.</>
+                )}
+                {data.liveError && <> Last update failed, retrying: {data.liveError}</>}
+              </span>
+            ) : (
+              <>
+                <span>This session is still being recorded.</span>
+                <Button size="sm" variant="destructive" icon="circle-mono" onClick={() => setLive(true)}>
+                  Go live
+                </Button>
+              </>
+            )}
+          </div>
+        )}
         {events.length > 0 ? (
           <ReplayPlayer
-            key={track}
+            key={`${track}-${live ? 'live' : 'replay'}`}
             events={events}
             initialOffsetMs={track === (props.track ?? 0) ? t : 0}
             seekRequest={seekRequest}
             markers={markers}
             onTimeChange={onTimeChange}
             onShare={onShare}
+            live={live}
+            liveReceivedAtMs={data.lastReplayMs}
+            onExitLive={() => setLive(false)}
           />
         ) : noRecording ? (
           <Alert severity="info" title="Nothing to replay">
@@ -175,4 +215,11 @@ const getStyles = (theme: GrafanaTheme2) => ({
   journey: css({ minWidth: 0, minHeight: 0, [theme.breakpoints.down('lg')]: { height: 480 } }),
   note: css({ color: theme.colors.text.secondary, fontSize: theme.typography.bodySmall.fontSize }),
   tracks: css({ display: 'flex', alignItems: 'center', gap: theme.spacing(1), flexWrap: 'wrap' }),
+  liveBar: css({
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1),
+    flexWrap: 'wrap',
+    color: theme.colors.text.secondary,
+  }),
 });

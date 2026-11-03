@@ -159,7 +159,7 @@ export function toJourneyEvent(tsNs: string, line: string, sessionId: string): J
 }
 
 /** Sort by time and drop duplicates (overlapping pages / retried sends). */
-export function buildJourney(entries: Array<{ tsNs: string; line: string }>, sessionId: string): JourneyEvent[] {
+export function buildJourney(entries: Iterable<{ tsNs: string; line: string }>, sessionId: string): JourneyEvent[] {
   const byId = new Map<string, JourneyEvent>();
   for (const entry of entries) {
     const event = toJourneyEvent(entry.tsNs, entry.line, sessionId);

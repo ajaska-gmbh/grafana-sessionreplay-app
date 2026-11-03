@@ -43,6 +43,7 @@ function ReplayPage() {
           to={to}
           t={numberParam(searchParams.get('t'))}
           track={numberParam(searchParams.get('track'))}
+          live={searchParams.get('live') === '1'}
           lokiUid={lokiUid}
           tempoUid={tempoUid}
         />
