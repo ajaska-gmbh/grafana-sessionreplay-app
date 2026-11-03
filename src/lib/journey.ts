@@ -26,8 +26,12 @@ const HIDDEN_EVENTS = new Set([
  * Measurements that never appear in the journey: the dialer's audio levels
  * (per call, and of the idle microphone) arrive every second and would bury
  * everything else. Their silence warnings are logs and still show as errors.
+ *
+ * The journey query already leaves them out (journeyQuery); this is the
+ * safety net for any line that still gets through.
  */
-const HIDDEN_MEASUREMENTS = new Set(['twilio_audio_level', 'telnyx_audio_level', 'twilio_mic_level_idle']);
+export const HIDDEN_MEASUREMENT_TYPES = ['twilio_audio_level', 'telnyx_audio_level', 'twilio_mic_level_idle'] as const;
+const HIDDEN_MEASUREMENTS = new Set<string>(HIDDEN_MEASUREMENT_TYPES);
 
 const NAVIGATION_EVENTS = new Set([
   'session_start',
