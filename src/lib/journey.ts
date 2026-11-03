@@ -23,11 +23,11 @@ const HIDDEN_EVENTS = new Set([
 ]);
 
 /**
- * Measurements that never appear in the journey: the dialer's per-call audio
- * levels arrive every 5 s and would bury everything else. Their silence
- * warnings are logs and still show as errors.
+ * Measurements that never appear in the journey: the dialer's audio levels
+ * (per call, and of the idle microphone) arrive every second and would bury
+ * everything else. Their silence warnings are logs and still show as errors.
  */
-const HIDDEN_MEASUREMENTS = new Set(['twilio_audio_level', 'telnyx_audio_level']);
+const HIDDEN_MEASUREMENTS = new Set(['twilio_audio_level', 'telnyx_audio_level', 'twilio_mic_level_idle']);
 
 const NAVIGATION_EVENTS = new Set([
   'session_start',

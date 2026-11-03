@@ -21,12 +21,21 @@ export const exceptionLine =
 export const audioLevelLine = (type: string) =>
   `timestamp="2026-11-03 12:37:20.000 +0000 UTC" kind=measurement type=${type} ` +
   'value_input_avg=0.21 value_input_max=0.48 value_output_avg=0.17 value_output_max=0.44 ' +
-  'value_input_silent_ratio=0 value_output_silent_ratio=0.1 value_samples=100 value_window_ms=5000 ' +
-  `context_context=agent-conference context_callSid=CA123 context_direction=OUTGOING ${meta}`;
+  'value_input_silent_ratio=0 value_output_silent_ratio=0.1 value_samples=20 value_window_ms=1000 ' +
+  `context_context=agent-conference context_callSid=CA123 context_direction=OUTGOING context_phase=call ${meta}`;
 
 export const micSilentLine =
   'timestamp="2026-11-03 12:37:28.000 +0000 UTC" kind=log message="[PPD] Twilio mic silent" level=warn ' +
   `context_callSid=CA123 context_silentForMs=8000 ${meta}`;
+
+export const idleMicLevelLine =
+  'timestamp="2026-11-03 12:37:21.000 +0000 UTC" kind=measurement type=twilio_mic_level_idle ' +
+  'value_input_avg=0.18 value_input_max=0.41 value_input_silent_ratio=0 value_samples=60 value_window_ms=1000 ' +
+  `context_phase=idle ${meta}`;
+
+export const idleMicSilentLine =
+  'timestamp="2026-11-03 12:37:29.000 +0000 UTC" kind=log message="[PPD] Twilio mic silent (idle)" level=warn ' +
+  `context_phase=idle context_silentForMs=8000 ${meta}`;
 
 export const webVitalLine =
   'timestamp="2026-11-03 12:37:14.016 +0000 UTC" kind=measurement type=web-vitals cls=0.014845 ' +

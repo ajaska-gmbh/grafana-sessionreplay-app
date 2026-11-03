@@ -2,6 +2,8 @@ import { buildJourney, faroTimeMs, toJourneyEvent } from './journey';
 import {
   audioLevelLine,
   exceptionLine,
+  idleMicLevelLine,
+  idleMicSilentLine,
   fetchLine,
   logLine,
   micSilentLine,
@@ -74,9 +76,20 @@ describe('toJourneyEvent', () => {
 });
 
 describe('dialer audio levels', () => {
-  it('hides the per-call audio level measurements, which arrive every 5 s', () => {
+  it('hides the per-call audio level measurements, which arrive every second', () => {
     expect(toJourneyEvent('1', audioLevelLine('twilio_audio_level'), SESSION_ID)).toBeUndefined();
     expect(toJourneyEvent('1', audioLevelLine('telnyx_audio_level'), SESSION_ID)).toBeUndefined();
+  });
+
+  it('hides the idle microphone level measurements too', () => {
+    expect(toJourneyEvent('1', idleMicLevelLine, SESSION_ID)).toBeUndefined();
+  });
+
+  it('still shows an idle microphone silence warning as an error', () => {
+    expect(toJourneyEvent('1', idleMicSilentLine, SESSION_ID)).toMatchObject({
+      category: 'error',
+      title: '[PPD] Twilio mic silent (idle)',
+    });
   });
 
   it('still shows other measurements', () => {
