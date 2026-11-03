@@ -7,11 +7,15 @@ import type { eventWithTime } from '@grafana/rrweb-types';
  *
  * The writer sends a stylesheet text (rrweb `_cssText`, or `textContent` of a
  * text node with `isStyle: true`) of at least STYLESHEET_REF_MIN_LENGTH code
- * units in full the first time within a Faro session, and afterwards as
- * `ajaska-css/v1:<cyrb53 hex>:<length>`. The full text always precedes its
- * references in time and in the same session, and the session is loaded from
- * its start (live mode included), so references are resolved once, in place,
- * when their events are added, before the player sees them.
+ * units in full the first time after each full snapshot of the recording page
+ * (recording start, 5-minute checkouts, restarts), and otherwise as
+ * `ajaska-css/v1:<cyrb53 hex>:<length>`. The full text therefore precedes its
+ * references in the same session, at most one checkout earlier; a lost full
+ * text costs at most the rest of that checkout period. The session is loaded
+ * from its first recording start, even for links whose range starts later
+ * (see loadRange), live mode included. References are resolved once, in
+ * place, when their events are added, before the player sees them; within one
+ * loaded batch the order does not matter.
  *
  * KEEP IN SYNC with the writer: hash, format and minimum length must be
  * identical; both test suites pin the same vectors.
