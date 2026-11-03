@@ -116,7 +116,8 @@ grafana:
     plugins:
       allow_loading_unsigned_plugins: ajaska-sessionreplay-app # only for unsigned releases
   plugins:
-    - https://github.com/ajaska-gmbh/grafana-sessionreplay-app/releases/download/v0.1.0/ajaska-sessionreplay-app-0.1.0.zip;ajaska-sessionreplay-app
+    # Grafana >= 12 preinstall format: id@version@url
+    - ajaska-sessionreplay-app@0.1.0@https://github.com/ajaska-gmbh/grafana-sessionreplay-app/releases/download/v0.1.0/ajaska-sessionreplay-app-0.1.0.zip
 ```
 
 ## Development
