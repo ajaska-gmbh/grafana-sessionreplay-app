@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { css } from '@emotion/css';
-import { AppEvents, GrafanaTheme2 } from '@grafana/data';
-import { config, getAppEvents } from '@grafana/runtime';
+import { AppEvents, GrafanaTheme2, locationUtil } from '@grafana/data';
+import { getAppEvents } from '@grafana/runtime';
 import { Alert, Button, LoadingPlaceholder, RadioButtonGroup, useStyles2 } from '@grafana/ui';
 import { useSessionData } from '../../hooks/useSessionData';
 import { formatClock, replayUrl } from '../../lib/format';
@@ -40,7 +40,8 @@ export function shareLink(
     to: props.to,
     track: props.track,
   });
-  return `${window.location.origin}${config.appSubUrl ?? ''}${path}`;
+  // assureBaseUrl adds Grafana's sub path (appSubUrl) when Grafana is served below the domain root.
+  return `${window.location.origin}${locationUtil.assureBaseUrl(path)}`;
 }
 
 /** Wall clock for "is this session still active", refreshed every few seconds. */
