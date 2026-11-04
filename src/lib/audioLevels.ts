@@ -16,6 +16,25 @@ import type { LokiLine } from '../types';
  */
 export const AUDIO_LEVEL_TYPES = HIDDEN_MEASUREMENT_TYPES;
 
+export type AudioPhase = 'call' | 'waiting' | 'idle';
+
+/** The only dialer state with a customer on the agent's line. */
+const CUSTOMER_STATE = 'ON_CALL';
+
+/**
+ * Which phase a window belongs to. The agent's leg is the same conference leg
+ * while waiting and while talking, so only the agent's state tells them
+ * apart. Without a state (lines from before it was sent), a line is assumed
+ * to have a customer.
+ */
+function phaseOf(type: string, fields: Record<string, string>): AudioPhase {
+  if (type === 'twilio_mic_level_idle' || fields.context_phase === 'idle') {
+    return 'idle';
+  }
+  const state = fields.user_attr_state;
+  return state && state !== CUSTOMER_STATE ? 'waiting' : 'call';
+}
+
 /** A level below this is silent (the dialer's AUDIO_SILENCE_THRESHOLD, about -99 dB). */
 export const AUDIO_SILENCE_THRESHOLD = 0.01;
 
@@ -23,7 +42,16 @@ export interface AudioLevelWindow {
   /** Epoch ms of the window's start and end (Faro sends the measurement at the end). */
   startMs: number;
   endMs: number;
-  phase: 'call' | 'idle';
+  /**
+   * - `call`: a customer is on the line (the agent's state is ON_CALL);
+   * - `waiting`: the agent's line is open in their conference, but no customer
+   *   is on it (AVAILABLE, connecting): "customer audio" is then the empty
+   *   conference, not a customer;
+   * - `idle`: no line at all, the idle meter's microphone only.
+   */
+  phase: AudioPhase;
+  /** The agent's dialer state when the window was sent (Faro user attribute). */
+  agentState?: string;
   /** Level reports the browser delivered in the window; 0 means the SDK reported nothing. */
   samples: number;
   agentAvg?: number;
@@ -91,7 +119,8 @@ export function parseAudioLevelLine(tsNs: string, line: string, sessionId: strin
   return {
     startMs: endMs - Math.max(0, windowMs),
     endMs,
-    phase: type === 'twilio_mic_level_idle' || fields.context_phase === 'idle' ? 'idle' : 'call',
+    phase: phaseOf(type, fields),
+    agentState: fields.user_attr_state || undefined,
     samples: value(fields, 'samples') ?? 0,
     agentAvg: value(fields, 'agent_mic_avg'),
     agentMax: value(fields, 'agent_mic_max'),

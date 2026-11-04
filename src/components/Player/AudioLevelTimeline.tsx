@@ -3,7 +3,7 @@ import { css } from '@emotion/css';
 import { GrafanaTheme2 } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { AUDIO_SILENCE_THRESHOLD, readingAt, segmentAt, type AudioLevelSegment } from '../../lib/audioLevels';
-import { formatClock } from '../../lib/format';
+import { formatClock, formatWallClock } from '../../lib/format';
 import { testIds } from '../testIds';
 
 export interface AudioLevelTimelineProps {
@@ -11,19 +11,25 @@ export interface AudioLevelTimelineProps {
   segments: AudioLevelSegment[];
   totalMs: number;
   offsetMs: number;
+  /** Epoch ms of the recording's start, for the wall-clock time in the readout. */
+  startTimeMs?: number;
   onSeek: (offsetMs: number) => void;
 }
 
 /** SVG user units across the timeline; the SVG stretches to the timeline's width. */
 const WIDTH = 1000;
 const ROW_HEIGHT = 28;
-const STRIP_HEIGHT = 3;
+const STRIP_HEIGHT = 4;
+/** Bars on top, the row's strips (silence, no data) at its bottom, inside the row's band. */
+const BAND_HEIGHT = ROW_HEIGHT + 1 + STRIP_HEIGHT;
 
 type Channel = 'agent' | 'customer';
 
 interface Paths {
   avg: string;
   max: string;
+  waitAvg: string;
+  waitMax: string;
   idleAvg: string;
   idleMax: string;
   silent: string;
@@ -90,7 +96,8 @@ class Columns {
 
 /**
  * One row's shapes, each as a single path: average (solid) over peak (faint),
- * in a call and between calls (idle, agent only), plus strips below for
+ * per phase: with a customer, waiting with the line open, and between calls
+ * (idle). The customer row has only time with a customer. Strips below for
  * silence (a window below the dialer's threshold) and for windows without
  * level data, and a shade where the tab was in the background.
  *
@@ -100,9 +107,18 @@ class Columns {
  * reading and a long one stays a bounded number of shapes.
  */
 export function channelPaths(segments: AudioLevelSegment[], channel: Channel, totalMs: number): Paths {
-  const paths: Paths = { avg: '', max: '', idleAvg: '', idleMax: '', silent: '', noData: '', hidden: '' };
-  const call = new Columns();
-  const idle = new Columns();
+  const paths: Paths = {
+    avg: '',
+    max: '',
+    waitAvg: '',
+    waitMax: '',
+    idleAvg: '',
+    idleMax: '',
+    silent: '',
+    noData: '',
+    hidden: '',
+  };
+  const columns = { call: new Columns(), waiting: new Columns(), idle: new Columns() };
   const stripY = ROW_HEIGHT + 1;
   for (const segment of segments) {
     if (channel === 'customer' && segment.phase !== 'call') {
@@ -120,27 +136,34 @@ export function channelPaths(segments: AudioLevelSegment[], channel: Channel, to
     const avg = channel === 'agent' ? segment.agentAvg : segment.customerAvg;
     const max = channel === 'agent' ? segment.agentMax : segment.customerMax;
     const readings = channel === 'agent' ? segment.agentLevels : segment.customerLevels;
-    const columns = segment.phase === 'idle' ? idle : call;
+    const phaseColumns = columns[segment.phase];
     if (readings && readings.length > 0) {
       const step = (segment.rawEndOffsetMs - segment.rawStartOffsetMs) / readings.length;
       readings.forEach((reading, index) => {
         const from = segment.rawStartOffsetMs + index * step;
         // Readings outside the recording (a clipped window) are left out.
         if (from + step > 0 && from < totalMs) {
-          columns.add(Math.max(0, from), Math.min(totalMs, from + step), totalMs, reading, reading);
+          phaseColumns.add(Math.max(0, from), Math.min(totalMs, from + step), totalMs, reading, reading);
         }
       });
     } else if (avg !== undefined) {
-      columns.add(segment.startOffsetMs, segment.endOffsetMs, totalMs, avg, max ?? avg);
+      phaseColumns.add(segment.startOffsetMs, segment.endOffsetMs, totalMs, avg, max ?? avg);
     }
     if (avg !== undefined && avg < AUDIO_SILENCE_THRESHOLD) {
       paths.silent += strip(x1, x2, stripY);
     }
   }
-  ({ avg: paths.avg, max: paths.max } = call.paths());
-  ({ avg: paths.idleAvg, max: paths.idleMax } = idle.paths());
+  ({ avg: paths.avg, max: paths.max } = columns.call.paths());
+  ({ avg: paths.waitAvg, max: paths.waitMax } = columns.waiting.paths());
+  ({ avg: paths.idleAvg, max: paths.idleMax } = columns.idle.paths());
   return paths;
 }
+
+const PHASE_NAMES: Record<AudioLevelSegment['phase'], string> = {
+  call: 'customer on the line',
+  waiting: 'waiting for a call (line open, no customer)',
+  idle: 'between calls',
+};
 
 function level(value: number | undefined): string {
   return value === undefined ? '–' : value.toFixed(3);
@@ -151,7 +174,7 @@ function level(value: number | undefined): string {
  * where the window carries its readings, the reading under the pointer.
  */
 export function describeSegment(segment: AudioLevelSegment, offsetMs?: number): string {
-  const parts = [segment.phase === 'idle' ? 'between calls' : 'in call'];
+  const parts = [PHASE_NAMES[segment.phase]];
   const here = (levels: number[] | undefined) => {
     const reading = offsetMs === undefined ? undefined : readingAt(levels, segment, offsetMs);
     return reading === undefined ? '' : `, here ${level(reading)}`;
@@ -174,6 +197,8 @@ export function describeSegment(segment: AudioLevelSegment, offsetMs?: number): 
 
 interface RowProps {
   label: string;
+  /** What the row measures, next to its name. */
+  hint: string;
   paths: Paths;
   color: string;
   colors: Colors;
@@ -191,10 +216,12 @@ interface Colors {
 }
 
 /**
- * One channel's SVG. Memoised: it only changes with new levels, never with the
- * playhead, so long sessions are not redrawn on every frame of playback.
+ * One channel: a header with its colour and name, then its own band with the
+ * bars on top and its silence / no-data strips at the bottom, so nothing of
+ * one row can be read as belonging to the other. Memoised: it only changes
+ * with new levels, never with the playhead.
  */
-const Row = React.memo(function Row({ label, paths, color, colors, testId, totalMs, onHover, onSeek }: RowProps) {
+const Row = React.memo(function Row({ label, hint, paths, color, colors, testId, totalMs, onHover, onSeek }: RowProps) {
   const styles = useStyles2(getStyles);
   const offsetAt = (event: React.MouseEvent<SVGSVGElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
@@ -202,10 +229,14 @@ const Row = React.memo(function Row({ label, paths, color, colors, testId, total
   };
   return (
     <div className={styles.row}>
-      <span className={styles.label}>{label}</span>
+      <div className={styles.header}>
+        <span className={styles.swatch} style={{ background: color }} />
+        <span className={styles.name}>{label}</span>
+        <span className={styles.hint}>{hint}</span>
+      </div>
       <svg
-        className={styles.svg}
-        viewBox={`0 0 ${WIDTH} ${ROW_HEIGHT + 1 + STRIP_HEIGHT}`}
+        className={styles.band}
+        viewBox={`0 0 ${WIDTH} ${BAND_HEIGHT}`}
         preserveAspectRatio="none"
         role="img"
         aria-label={`${label} level over time`}
@@ -214,9 +245,11 @@ const Row = React.memo(function Row({ label, paths, color, colors, testId, total
         onMouseLeave={() => onHover(undefined)}
         onClick={(event) => onSeek(offsetAt(event))}
       >
-        <path d={paths.hidden} fill={colors.hidden} fillOpacity={0.15} />
-        <path d={paths.max} fill={color} fillOpacity={0.3} />
+        <path d={paths.hidden} fill={colors.hidden} fillOpacity={0.2} />
+        <path d={paths.max} fill={color} fillOpacity={0.35} />
         <path d={paths.avg} fill={color} />
+        <path d={paths.waitMax} fill={color} fillOpacity={0.12} />
+        <path d={paths.waitAvg} fill={color} fillOpacity={0.4} />
         <path d={paths.idleMax} fill={colors.idle} fillOpacity={0.2} />
         <path d={paths.idleAvg} fill={colors.idle} fillOpacity={0.6} />
         <path d={paths.silent} fill={colors.silent} data-testid={`${testId}-silent`} />
@@ -228,20 +261,20 @@ const Row = React.memo(function Row({ label, paths, color, colors, testId, total
 
 /**
  * The dialer's audio levels under the replay timeline: the agent's microphone
- * and the call audio the agent hears, each on its own row, on the same time
- * axis as the timeline above. Click to jump there.
+ * and, while a customer is on the line, the customer's audio as the agent
+ * hears it, each in its own band on the timeline's time axis. Click to jump.
  */
-export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: AudioLevelTimelineProps) {
+export function AudioLevelTimeline({ segments, totalMs, offsetMs, startTimeMs, onSeek }: AudioLevelTimelineProps) {
   const styles = useStyles2(getStyles);
   const theme = useTheme2();
   const [hoverMs, setHoverMs] = useState<number>();
   const agent = useMemo(() => channelPaths(segments, 'agent', totalMs), [segments, totalMs]);
   const customer = useMemo(() => channelPaths(segments, 'customer', totalMs), [segments, totalMs]);
-  const hasCall = useMemo(() => segments.some((segment) => segment.phase === 'call'), [segments]);
+  const hasCustomer = useMemo(() => segments.some((segment) => segment.phase === 'call'), [segments]);
   const colors = useMemo<Colors & { agent: string; customer: string }>(
     () => ({
       agent: theme.visualization.getColorByName('blue'),
-      customer: theme.visualization.getColorByName('green'),
+      customer: theme.visualization.getColorByName('orange'),
       idle: theme.colors.text.secondary,
       silent: theme.colors.error.main,
       noData: theme.colors.warning.main,
@@ -256,12 +289,18 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: Audi
 
   const hovered = hoverMs === undefined ? undefined : segmentAt(segments, hoverMs);
   const playheadPercent = (Math.min(totalMs, Math.max(0, offsetMs)) / totalMs) * 100;
+  const hoverTime = (ms: number) =>
+    startTimeMs === undefined ? formatClock(ms) : `${formatWallClock(startTimeMs + ms)} (${formatClock(ms)})`;
+  const swatch = (color: string, opacity = 1) => (
+    <span className={styles.legendSwatch} style={{ background: color, opacity }} />
+  );
 
   return (
     <div className={styles.container} data-testid={testIds.player.audioLevels}>
       <div className={styles.rows}>
         <Row
           label="Agent mic"
+          hint="what the agent says"
           paths={agent}
           color={colors.agent}
           colors={colors}
@@ -270,9 +309,10 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: Audi
           onHover={setHoverMs}
           onSeek={onSeek}
         />
-        {hasCall && (
+        {hasCustomer && (
           <Row
-            label="Customer audio"
+            label="Customer"
+            hint="what the agent hears, while a customer is on the line"
             paths={customer}
             color={colors.customer}
             colors={colors}
@@ -290,14 +330,16 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: Audi
         />
       </div>
       <div className={styles.readout} aria-live="polite">
-        {hovered ? (
+        {hovered && hoverMs !== undefined ? (
           <>
-            {formatClock(hoverMs ?? hovered.startOffsetMs)} · {describeSegment(hovered, hoverMs)}
+            {hoverTime(hoverMs)} · {describeSegment(hovered, hoverMs)}
           </>
         ) : (
           <span className={styles.legend}>
-            <span style={{ color: colors.silent }}>■</span> silent · <span style={{ color: colors.noData }}>■</span> no
-            level data · <span style={{ color: colors.idle }}>■</span> between calls · shaded: tab in background
+            {swatch(colors.agent)} with customer {swatch(colors.agent, 0.4)} waiting, line open{' '}
+            {swatch(colors.idle, 0.6)} between calls {swatch(colors.silent)} silent {swatch(colors.noData)} no level
+            data {swatch(colors.hidden, 0.4)} tab in background
+            {!hasCustomer && <> · no customer on the line in this recording</>}
           </span>
         )}
       </div>
@@ -309,11 +351,29 @@ const getStyles = (theme: GrafanaTheme2) => ({
   container: css({
     display: 'flex',
     flexDirection: 'column',
-    gap: theme.spacing(0.25),
-    paddingTop: theme.spacing(0.5),
+    gap: theme.spacing(0.5),
+    paddingTop: theme.spacing(1),
   }),
-  rows: css({ position: 'relative', display: 'flex', flexDirection: 'column', gap: theme.spacing(0.25) }),
-  row: css({ position: 'relative' }),
+  rows: css({ position: 'relative', display: 'flex', flexDirection: 'column', gap: theme.spacing(1) }),
+  row: css({ display: 'flex', flexDirection: 'column', gap: theme.spacing(0.25) }),
+  header: css({
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(0.75),
+    fontSize: theme.typography.bodySmall.fontSize,
+    lineHeight: 1.2,
+  }),
+  swatch: css({ width: 10, height: 10, borderRadius: 2, flexShrink: 0 }),
+  name: css({ fontWeight: theme.typography.fontWeightMedium, color: theme.colors.text.primary }),
+  hint: css({ color: theme.colors.text.secondary }),
+  band: css({
+    display: 'block',
+    width: '100%',
+    height: BAND_HEIGHT,
+    cursor: 'pointer',
+    background: theme.colors.background.secondary,
+    borderRadius: theme.shape.radius.default,
+  }),
   playhead: css({
     position: 'absolute',
     top: 0,
@@ -323,15 +383,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
     background: theme.colors.text.primary,
     pointerEvents: 'none',
   }),
-  label: css({
-    position: 'absolute',
-    top: 0,
-    left: theme.spacing(0.5),
-    fontSize: theme.typography.bodySmall.fontSize,
-    color: theme.colors.text.secondary,
-    pointerEvents: 'none',
-  }),
-  svg: css({ display: 'block', width: '100%', height: ROW_HEIGHT + 1 + STRIP_HEIGHT, cursor: 'pointer' }),
   readout: css({
     minHeight: theme.typography.bodySmall.lineHeight,
     fontSize: theme.typography.bodySmall.fontSize,
@@ -339,4 +390,12 @@ const getStyles = (theme: GrafanaTheme2) => ({
     fontVariantNumeric: 'tabular-nums',
   }),
   legend: css({ color: theme.colors.text.secondary }),
+  legendSwatch: css({
+    display: 'inline-block',
+    width: 8,
+    height: 8,
+    borderRadius: 2,
+    margin: theme.spacing(0, 0.5, 0, 1),
+    verticalAlign: 'baseline',
+  }),
 });

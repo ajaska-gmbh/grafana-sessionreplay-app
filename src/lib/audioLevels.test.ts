@@ -72,6 +72,20 @@ describe('audio level lines', () => {
     expect(decodeLevelSeries('pct2', '')).toBeUndefined();
   });
 
+  it("tells a customer on the line from waiting with the line open, by the agent's state", () => {
+    const withState = (state: string) => `${IN_CALL} user_attr_state=${state}`;
+
+    expect(parseAudioLevelLine('1', withState('ON_CALL'), SESSION)).toMatchObject({
+      phase: 'call',
+      agentState: 'ON_CALL',
+    });
+    expect(parseAudioLevelLine('1', withState('AVAILABLE'), SESSION)?.phase).toBe('waiting');
+    expect(parseAudioLevelLine('1', withState('CONNECTING_AVAILABLE_SECONDARY'), SESSION)?.phase).toBe('waiting');
+    // Lines without a state are assumed to have a customer, as before.
+    expect(parseAudioLevelLine('1', IN_CALL, SESSION)?.phase).toBe('call');
+    expect(parseAudioLevelLine('1', `${IDLE} user_attr_state=AVAILABLE`, SESSION)?.phase).toBe('idle');
+  });
+
   it('reads an idle window: the microphone only', () => {
     const window = parseAudioLevelLine('1', IDLE, SESSION)!;
 

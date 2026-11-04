@@ -57,6 +57,19 @@ describe('audio level paths', () => {
     expect(customer.idleAvg).toBe('');
   });
 
+  it('draws waiting with the line open in the agent row only, apart from calls with a customer', () => {
+    // A waiting window even carries "customer" values: the empty conference, not a customer.
+    const segments = [segment(0), segment(1000, { phase: 'waiting' })];
+
+    const agent = channelPaths(segments, 'agent', 10_000);
+    const customer = channelPaths(segments, 'customer', 10_000);
+
+    expect(bars(agent.avg)).toEqual([[0, 1000, 0.2]]);
+    expect(bars(agent.waitAvg)).toEqual([[1000, 2000, 0.2]]);
+    expect(bars(customer.avg)).toEqual([[0, 1000, 0.1]]);
+    expect(customer.waitAvg).toBe('');
+  });
+
   it('places each 50 ms reading on its own where the window carries them', () => {
     const readings = [0.1, 0.5, 0, 0.3];
     const segments = [segment(0, { agentLevels: readings, customerLevels: [0.2, 0.2, 0.2, 0.2] })];
@@ -109,20 +122,20 @@ describe('audio level paths', () => {
     const agent = channelPaths(segments, 'agent', 10_000);
     const customer = channelPaths(segments, 'customer', 10_000);
 
-    expect(agent.silent).toBe('M0.00,29H100.00v3H0.00Z');
+    expect(agent.silent).toBe('M0.00,29H100.00v4H0.00Z');
     expect(customer.silent).toBe('');
-    expect(agent.noData).toBe('M100.00,29H200.00v3H100.00Z');
+    expect(agent.noData).toBe('M100.00,29H200.00v4H100.00Z');
     expect(agent.hidden).toBe('M200.00,0H300.00V28H200.00Z');
   });
 
   it('describes a window for the hover readout', () => {
     expect(describeSegment(segment(0, { hiddenRatio: 0.25 }))).toBe(
-      'in call · agent mic 0.200 (max 0.400) · customer audio 0.100 (max 0.300) · tab hidden 25%'
+      'customer on the line · agent mic 0.200 (max 0.400) · customer audio 0.100 (max 0.300) · tab hidden 25%'
     );
     expect(describeSegment(segment(0, { phase: 'idle' }))).toBe('between calls · agent mic 0.200 (max 0.400)');
-    expect(describeSegment(segment(0, { samples: 0 }))).toBe('in call · no level data');
+    expect(describeSegment(segment(0, { samples: 0 }))).toBe('customer on the line · no level data');
     expect(describeSegment(segment(0, { agentLevels: [0.1, 0.5], customerLevels: [0, 0.07] }), 600)).toBe(
-      'in call · agent mic 0.200 (max 0.400, here 0.500) · customer audio 0.100 (max 0.300, here 0.070)'
+      'customer on the line · agent mic 0.200 (max 0.400, here 0.500) · customer audio 0.100 (max 0.300, here 0.070)'
     );
   });
 });
@@ -168,7 +181,50 @@ describe('AudioLevelTimeline', () => {
 
     fireEvent.mouseMove(agent, { clientX: 260 });
 
-    expect(screen.getByText(/0:05 · in call · agent mic 0.200/)).toBeInTheDocument();
+    expect(screen.getByText(/0:05 · customer on the line · agent mic 0.200/)).toBeInTheDocument();
+  });
+
+  it('has no customer row when no customer was on the line, and says so', () => {
+    render(
+      <AudioLevelTimeline
+        segments={[segment(0, { phase: 'waiting' }), segment(1000, { phase: 'idle' })]}
+        totalMs={10_000}
+        offsetMs={0}
+        onSeek={jest.fn()}
+      />
+    );
+
+    expect(screen.getByTestId(testIds.player.audioAgent)).toBeInTheDocument();
+    expect(screen.queryByTestId(testIds.player.audioCustomer)).toBeNull();
+    expect(screen.getByText(/no customer on the line in this recording/)).toBeInTheDocument();
+  });
+
+  it('names each row in its own header', () => {
+    render(<AudioLevelTimeline segments={[segment(0)]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />);
+
+    expect(screen.getByText('Agent mic')).toBeInTheDocument();
+    expect(screen.getByText('Customer')).toBeInTheDocument();
+    expect(screen.getByText(/while a customer is on the line/)).toBeInTheDocument();
+  });
+
+  it('reads out the time of day under the pointer, with the offset', () => {
+    // 12:33:40 UTC; the tests run in UTC (jest.config.js).
+    const startTimeMs = Date.UTC(2026, 10, 4, 12, 33, 40);
+    render(
+      <AudioLevelTimeline
+        segments={[segment(5000)]}
+        totalMs={10_000}
+        offsetMs={0}
+        startTimeMs={startTimeMs}
+        onSeek={jest.fn()}
+      />
+    );
+    const agent = screen.getByTestId(testIds.player.audioAgent);
+    svgBox(agent);
+
+    fireEvent.mouseMove(agent, { clientX: 260 });
+
+    expect(screen.getByText(/^12:33:45 \(0:05\) · customer on the line/)).toBeInTheDocument();
   });
 
   it('has no customer row between calls only, and nothing at all without levels', () => {
