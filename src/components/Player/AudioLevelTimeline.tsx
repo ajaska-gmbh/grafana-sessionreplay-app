@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { css } from '@emotion/css';
 import { GrafanaTheme2 } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
-import { AUDIO_SILENCE_THRESHOLD, segmentAt, type AudioLevelSegment } from '../../lib/audioLevels';
+import { AUDIO_SILENCE_THRESHOLD, readingAt, segmentAt, type AudioLevelSegment } from '../../lib/audioLevels';
 import { formatClock } from '../../lib/format';
 import { testIds } from '../testIds';
 
@@ -50,15 +50,59 @@ function strip(x1: number, x2: number, y: number): string {
   return x2 > x1 ? `M${x1.toFixed(2)},${y}H${x2.toFixed(2)}v${STRIP_HEIGHT}H${x1.toFixed(2)}Z` : '';
 }
 
+/** Columns per row: finer than any timeline is wide, coarse enough for hours of 50 ms readings. */
+export const COLUMNS = 2000;
+
+/** Per column: the average and the peak of the readings that fall into it. */
+class Columns {
+  readonly sum = new Float64Array(COLUMNS);
+  readonly count = new Uint32Array(COLUMNS);
+  readonly max = new Float64Array(COLUMNS);
+
+  /** A level that lasted from `fromMs` to `toMs` on the timeline. */
+  add(fromMs: number, toMs: number, totalMs: number, avg: number, max: number) {
+    const first = Math.max(0, Math.floor((fromMs / totalMs) * COLUMNS));
+    const last = Math.min(COLUMNS - 1, Math.ceil((toMs / totalMs) * COLUMNS) - 1);
+    for (let column = first; column <= last; column++) {
+      this.sum[column] += avg;
+      this.count[column]++;
+      if (max > this.max[column]) {
+        this.max[column] = max;
+      }
+    }
+  }
+
+  paths(): { avg: string; max: string } {
+    let avg = '';
+    let max = '';
+    const width = WIDTH / COLUMNS;
+    for (let column = 0; column < COLUMNS; column++) {
+      if (this.count[column] === 0) {
+        continue;
+      }
+      const x1 = column * width;
+      avg += bar(x1, x1 + width, this.sum[column] / this.count[column]);
+      max += bar(x1, x1 + width, this.max[column]);
+    }
+    return { avg, max };
+  }
+}
+
 /**
- * One row's shapes, each as a single path (thousands of 1 s windows stay one
- * element): average (solid) over maximum (faint), in a call and between calls
- * (idle, agent only), plus strips below for silence (below the dialer's
- * threshold) and for windows without level data, and a shade where the tab
- * was in the background.
+ * One row's shapes, each as a single path: average (solid) over peak (faint),
+ * in a call and between calls (idle, agent only), plus strips below for
+ * silence (a window below the dialer's threshold) and for windows without
+ * level data, and a shade where the tab was in the background.
+ *
+ * Where a window carries its 50 ms readings, each reading is placed on its
+ * own; otherwise the window's average and maximum cover the whole second.
+ * Readings are pooled into COLUMNS columns, so a short session shows every
+ * reading and a long one stays a bounded number of shapes.
  */
 export function channelPaths(segments: AudioLevelSegment[], channel: Channel, totalMs: number): Paths {
   const paths: Paths = { avg: '', max: '', idleAvg: '', idleMax: '', silent: '', noData: '', hidden: '' };
+  const call = new Columns();
+  const idle = new Columns();
   const stripY = ROW_HEIGHT + 1;
   for (const segment of segments) {
     if (channel === 'customer' && segment.phase !== 'call') {
@@ -75,17 +119,26 @@ export function channelPaths(segments: AudioLevelSegment[], channel: Channel, to
     }
     const avg = channel === 'agent' ? segment.agentAvg : segment.customerAvg;
     const max = channel === 'agent' ? segment.agentMax : segment.customerMax;
-    if (segment.phase === 'idle') {
-      paths.idleAvg += bar(x1, x2, avg);
-      paths.idleMax += bar(x1, x2, max);
-    } else {
-      paths.avg += bar(x1, x2, avg);
-      paths.max += bar(x1, x2, max);
+    const readings = channel === 'agent' ? segment.agentLevels : segment.customerLevels;
+    const columns = segment.phase === 'idle' ? idle : call;
+    if (readings && readings.length > 0) {
+      const step = (segment.rawEndOffsetMs - segment.rawStartOffsetMs) / readings.length;
+      readings.forEach((reading, index) => {
+        const from = segment.rawStartOffsetMs + index * step;
+        // Readings outside the recording (a clipped window) are left out.
+        if (from + step > 0 && from < totalMs) {
+          columns.add(Math.max(0, from), Math.min(totalMs, from + step), totalMs, reading, reading);
+        }
+      });
+    } else if (avg !== undefined) {
+      columns.add(segment.startOffsetMs, segment.endOffsetMs, totalMs, avg, max ?? avg);
     }
     if (avg !== undefined && avg < AUDIO_SILENCE_THRESHOLD) {
       paths.silent += strip(x1, x2, stripY);
     }
   }
+  ({ avg: paths.avg, max: paths.max } = call.paths());
+  ({ avg: paths.idleAvg, max: paths.idleMax } = idle.paths());
   return paths;
 }
 
@@ -93,15 +146,24 @@ function level(value: number | undefined): string {
   return value === undefined ? '–' : value.toFixed(3);
 }
 
-/** What the hover readout says about one window. */
-export function describeSegment(segment: AudioLevelSegment): string {
+/**
+ * What the hover readout says about one window: its average and maximum, and
+ * where the window carries its readings, the reading under the pointer.
+ */
+export function describeSegment(segment: AudioLevelSegment, offsetMs?: number): string {
   const parts = [segment.phase === 'idle' ? 'between calls' : 'in call'];
+  const here = (levels: number[] | undefined) => {
+    const reading = offsetMs === undefined ? undefined : readingAt(levels, segment, offsetMs);
+    return reading === undefined ? '' : `, here ${level(reading)}`;
+  };
   if (segment.samples === 0) {
     parts.push('no level data');
   } else {
-    parts.push(`agent mic ${level(segment.agentAvg)} (max ${level(segment.agentMax)})`);
+    parts.push(`agent mic ${level(segment.agentAvg)} (max ${level(segment.agentMax)}${here(segment.agentLevels)})`);
     if (segment.phase === 'call') {
-      parts.push(`customer audio ${level(segment.customerAvg)} (max ${level(segment.customerMax)})`);
+      parts.push(
+        `customer audio ${level(segment.customerAvg)} (max ${level(segment.customerMax)}${here(segment.customerLevels)})`
+      );
     }
   }
   if ((segment.hiddenRatio ?? 0) > 0) {
@@ -183,7 +245,7 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: Audi
       <div className={styles.readout} aria-live="polite">
         {hovered ? (
           <>
-            {formatClock(hovered.startOffsetMs)} · {describeSegment(hovered)}
+            {formatClock(hoverMs ?? hovered.startOffsetMs)} · {describeSegment(hovered, hoverMs)}
           </>
         ) : (
           <span className={styles.legend}>

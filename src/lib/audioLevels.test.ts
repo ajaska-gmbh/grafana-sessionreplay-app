@@ -3,6 +3,7 @@ jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 import {
   audioLevelsQuery,
   buildAudioLevels,
+  decodeLevelSeries,
   parseAudioLevelLine,
   segmentAt,
   toTimelineSegments,
@@ -49,6 +50,25 @@ describe('audio level lines', () => {
       hiddenRatio: 0,
       callSid: 'CA123',
     });
+  });
+
+  it("reads the window's 50 ms readings when the dialer sent them", () => {
+    const line = `${IN_CALL} context_levels_format=pct2 context_agent_mic_levels=12000599 context_customer_audio_levels=00010203`;
+
+    expect(parseAudioLevelLine('1', line, SESSION)).toMatchObject({
+      agentLevels: [0.12, 0, 0.05, 0.99],
+      customerLevels: [0, 0.01, 0.02, 0.03],
+    });
+    expect(parseAudioLevelLine('1', IN_CALL, SESSION)?.agentLevels).toBeUndefined();
+  });
+
+  it('decodes only the pct2 format, and nothing malformed', () => {
+    expect(decodeLevelSeries('pct2', '0099')).toEqual([0, 0.99]);
+    expect(decodeLevelSeries('pct3', '0099')).toBeUndefined();
+    expect(decodeLevelSeries(undefined, '0099')).toBeUndefined();
+    expect(decodeLevelSeries('pct2', '009')).toBeUndefined();
+    expect(decodeLevelSeries('pct2', '00x9')).toBeUndefined();
+    expect(decodeLevelSeries('pct2', '')).toBeUndefined();
   });
 
   it('reads an idle window: the microphone only', () => {

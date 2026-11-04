@@ -4,7 +4,25 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { AudioLevelSegment } from '../../lib/audioLevels';
 import { testIds } from '../testIds';
-import { AudioLevelTimeline, channelPaths, describeSegment } from './AudioLevelTimeline';
+import { AudioLevelTimeline, channelPaths, COLUMNS, describeSegment } from './AudioLevelTimeline';
+
+/** A bar path back as [from, to, height] in timeline ms and level, merging adjacent equal columns. */
+function bars(path: string, totalMs = 10_000): Array<[number, number, number]> {
+  const unitMs = totalMs / 1000;
+  const result: Array<[number, number, number]> = [];
+  for (const [, x1, top, x2] of path.matchAll(/M([\d.]+),28V([\d.]+)H([\d.]+)V28Z/g)) {
+    const from = Math.round(Number(x1) * unitMs);
+    const to = Math.round(Number(x2) * unitMs);
+    const level = Math.round(((28 - Number(top)) / 28) * 1000) / 1000;
+    const last = result[result.length - 1];
+    if (last && last[1] === from && last[2] === level) {
+      last[1] = to;
+    } else {
+      result.push([from, to, level]);
+    }
+  }
+  return result;
+}
 
 function segment(startOffsetMs: number, patch: Partial<AudioLevelSegment> = {}): AudioLevelSegment {
   return {
@@ -12,6 +30,8 @@ function segment(startOffsetMs: number, patch: Partial<AudioLevelSegment> = {}):
     endMs: startOffsetMs + 1000,
     startOffsetMs,
     endOffsetMs: startOffsetMs + 1000,
+    rawStartOffsetMs: startOffsetMs,
+    rawEndOffsetMs: startOffsetMs + 1000,
     phase: 'call',
     samples: 20,
     agentAvg: 0.2,
@@ -30,11 +50,53 @@ describe('audio level paths', () => {
     const agent = channelPaths(segments, 'agent', 10_000);
     const customer = channelPaths(segments, 'customer', 10_000);
 
-    // 0..1000 ms of 10 s is 0..100 of the 1000 units; avg 0.2 of a 28-unit row.
-    expect(agent.avg).toBe('M0.00,28V22.40H100.00V28Z');
-    expect(agent.idleAvg).toBe('M100.00,28V22.40H200.00V28Z');
-    expect(customer.avg).toBe('M0.00,28V25.20H100.00V28Z');
+    expect(bars(agent.avg)).toEqual([[0, 1000, 0.2]]);
+    expect(bars(agent.max)).toEqual([[0, 1000, 0.4]]);
+    expect(bars(agent.idleAvg)).toEqual([[1000, 2000, 0.2]]);
+    expect(bars(customer.avg)).toEqual([[0, 1000, 0.1]]);
     expect(customer.idleAvg).toBe('');
+  });
+
+  it('places each 50 ms reading on its own where the window carries them', () => {
+    const readings = [0.1, 0.5, 0, 0.3];
+    const segments = [segment(0, { agentLevels: readings, customerLevels: [0.2, 0.2, 0.2, 0.2] })];
+
+    const agent = channelPaths(segments, 'agent', 10_000);
+
+    // Four readings over 1 s: 250 ms each. A silent one draws nothing.
+    expect(bars(agent.avg)).toEqual([
+      [0, 250, 0.1],
+      [250, 500, 0.5],
+      [750, 1000, 0.3],
+    ]);
+    expect(bars(channelPaths(segments, 'customer', 10_000).avg)).toEqual([[0, 1000, 0.2]]);
+  });
+
+  it('pools readings of long sessions into a bounded number of columns: average and peak', () => {
+    const hourMs = 3_600_000;
+    const segments = Array.from({ length: 3600 }, (_, second) =>
+      segment(second * 1000, { agentLevels: Array.from({ length: 20 }, (__, i) => (i === 0 ? 0.9 : 0.1)) })
+    );
+
+    const agent = channelPaths(segments, 'agent', hourMs);
+
+    expect(agent.avg.match(/M/g)).toHaveLength(COLUMNS);
+    // 1.8 s per column: the peak keeps the 0.9 readings, the average mixes them in.
+    expect(bars(agent.max, hourMs)[0][2]).toBe(0.9);
+    expect(bars(agent.avg, hourMs)[0][2]).toBeCloseTo(0.14, 1);
+  });
+
+  it('leaves out the readings of a window clipped at the recording start', () => {
+    const segments = [
+      {
+        ...segment(0, { agentLevels: [0.9, 0.9, 0.2, 0.2] }),
+        rawStartOffsetMs: -500,
+        rawEndOffsetMs: 500,
+        endOffsetMs: 500,
+      },
+    ];
+
+    expect(bars(channelPaths(segments, 'agent', 10_000).avg)).toEqual([[0, 500, 0.2]]);
   });
 
   it('marks silence per channel, windows without data, and a background tab', () => {
@@ -59,6 +121,9 @@ describe('audio level paths', () => {
     );
     expect(describeSegment(segment(0, { phase: 'idle' }))).toBe('between calls · agent mic 0.200 (max 0.400)');
     expect(describeSegment(segment(0, { samples: 0 }))).toBe('in call · no level data');
+    expect(describeSegment(segment(0, { agentLevels: [0.1, 0.5], customerLevels: [0, 0.07] }), 600)).toBe(
+      'in call · agent mic 0.200 (max 0.400, here 0.500) · customer audio 0.100 (max 0.300, here 0.070)'
+    );
   });
 });
 

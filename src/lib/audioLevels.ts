@@ -29,10 +29,16 @@ export interface AudioLevelWindow {
   agentAvg?: number;
   agentMax?: number;
   agentSilentRatio?: number;
+  /**
+   * Every reading of the window (about one per 50 ms), when the dialer sent
+   * them (levels_format=pct2); in hundredths, so 0 is below the threshold.
+   */
+  agentLevels?: number[];
   /** In a call only. */
   customerAvg?: number;
   customerMax?: number;
   customerSilentRatio?: number;
+  customerLevels?: number[];
   /** Share of the window the dialer tab was in the background (timers throttled there). */
   hiddenRatio?: number;
   callSid?: string;
@@ -52,6 +58,22 @@ function value(fields: Record<string, string>, key: string): number | undefined 
   }
   const number = Number(raw);
   return Number.isFinite(number) ? number : undefined;
+}
+
+/**
+ * A window's readings in the dialer's `pct2` format: two digits per reading,
+ * the level in hundredths rounded down. Undefined for any other format or a
+ * malformed string.
+ */
+export function decodeLevelSeries(format: string | undefined, encoded: string | undefined): number[] | undefined {
+  if (format !== 'pct2' || !encoded || encoded.length % 2 !== 0 || !/^\d+$/.test(encoded)) {
+    return undefined;
+  }
+  const levels: number[] = [];
+  for (let i = 0; i < encoded.length; i += 2) {
+    levels.push(Number(encoded.slice(i, i + 2)) / 100);
+  }
+  return levels;
 }
 
 /** One measurement line as a window, or undefined for anything else. */
@@ -77,6 +99,8 @@ export function parseAudioLevelLine(tsNs: string, line: string, sessionId: strin
     customerAvg: value(fields, 'customer_audio_avg'),
     customerMax: value(fields, 'customer_audio_max'),
     customerSilentRatio: value(fields, 'customer_audio_silent_ratio'),
+    agentLevels: decodeLevelSeries(fields.context_levels_format, fields.context_agent_mic_levels),
+    customerLevels: decodeLevelSeries(fields.context_levels_format, fields.context_customer_audio_levels),
     hiddenRatio: value(fields, 'hidden_ratio'),
     callSid: fields.context_callSid || undefined,
   };
@@ -96,8 +120,12 @@ export function buildAudioLevels(entries: Iterable<LokiLine>, sessionId: string)
 
 /** A window positioned on the replay timeline (ms from the recording start). */
 export interface AudioLevelSegment extends AudioLevelWindow {
+  /** Clipped to the recording. */
   startOffsetMs: number;
   endOffsetMs: number;
+  /** Not clipped: where the window's readings really sit. */
+  rawStartOffsetMs: number;
+  rawEndOffsetMs: number;
 }
 
 /** The windows that overlap the recording, as timeline offsets. */
@@ -117,9 +145,25 @@ export function toTimelineSegments(
       ...window,
       startOffsetMs: Math.max(0, startOffsetMs),
       endOffsetMs: Math.min(totalMs, endOffsetMs),
+      rawStartOffsetMs: startOffsetMs,
+      rawEndOffsetMs: endOffsetMs,
     });
   }
   return segments;
+}
+
+/** The reading at an offset inside a segment, if the window carries its readings. */
+export function readingAt(
+  levels: number[] | undefined,
+  segment: AudioLevelSegment,
+  offsetMs: number
+): number | undefined {
+  if (!levels || levels.length === 0) {
+    return undefined;
+  }
+  const length = segment.rawEndOffsetMs - segment.rawStartOffsetMs;
+  const index = length > 0 ? Math.floor(((offsetMs - segment.rawStartOffsetMs) / length) * levels.length) : 0;
+  return levels[Math.min(levels.length - 1, Math.max(0, index))];
 }
 
 /** The window at a timeline offset, for the hover readout. */
