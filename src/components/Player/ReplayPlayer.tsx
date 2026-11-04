@@ -16,6 +16,9 @@ const SKIP_MS = 10_000;
 /** Live playback trails the newest event by this much, so late batches still play in order. */
 export const LIVE_BUFFER_MS = 3000;
 
+/** Half the width of the range input's thumb (16 px in Chromium and Firefox). */
+const THUMB_INSET_PX = 8;
+
 export interface TimelineMarker {
   offsetMs: number;
   kind: 'error' | 'navigation';
@@ -440,23 +443,27 @@ export function ReplayPlayer({
               onChange={(event) => seek(Number(event.currentTarget.value))}
               data-testid={testIds.player.timeline}
             />
-            {total > 0 &&
-              markers.map((marker, index) => (
-                <Tooltip key={`${marker.offsetMs}-${index}`} content={marker.title}>
-                  <button
-                    type="button"
-                    aria-label={marker.title}
-                    className={cx(
-                      styles.marker,
-                      marker.kind === 'error' ? styles.markerError : styles.markerNavigation
-                    )}
-                    style={{ left: `${Math.min(100, Math.max(0, (marker.offsetMs / total) * 100))}%` }}
-                    onClick={() => seek(marker.offsetMs)}
-                  />
-                </Tooltip>
-              ))}
+            <div className={styles.markerTrack}>
+              {total > 0 &&
+                markers.map((marker, index) => (
+                  <Tooltip key={`${marker.offsetMs}-${index}`} content={marker.title}>
+                    <button
+                      type="button"
+                      aria-label={marker.title}
+                      className={cx(
+                        styles.marker,
+                        marker.kind === 'error' ? styles.markerError : styles.markerNavigation
+                      )}
+                      style={{ left: `${Math.min(100, Math.max(0, (marker.offsetMs / total) * 100))}%` }}
+                      onClick={() => seek(marker.offsetMs)}
+                    />
+                  </Tooltip>
+                ))}
+            </div>
             {audioSegments.length > 0 && (
-              <AudioLevelTimeline segments={audioSegments} totalMs={total} offsetMs={offset} onSeek={seek} />
+              <div className={styles.graphTrack}>
+                <AudioLevelTimeline segments={audioSegments} totalMs={total} offsetMs={offset} onSeek={seek} />
+              </div>
             )}
           </div>
 
@@ -559,6 +566,15 @@ const getStyles = (theme: GrafanaTheme2) => ({
     fontSize: theme.typography.h4.fontSize,
   }),
   timeline: css({ position: 'relative', padding: theme.spacing(1, 2, 0) }),
+  // The range thumb's centre runs from half a thumb in to half a thumb short
+  // of the input's ends; markers and the level graph follow the same axis.
+  markerTrack: css({
+    position: 'absolute',
+    top: 0,
+    left: `calc(${theme.spacing(2)} + ${THUMB_INSET_PX}px)`,
+    right: `calc(${theme.spacing(2)} + ${THUMB_INSET_PX}px)`,
+  }),
+  graphTrack: css({ margin: `0 ${THUMB_INSET_PX}px` }),
   range: css({ width: '100%', accentColor: theme.colors.primary.main, cursor: 'pointer' }),
   marker: css({
     position: 'absolute',

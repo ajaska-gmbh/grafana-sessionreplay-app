@@ -3,6 +3,7 @@ jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 import {
   audioLevelsQuery,
   buildAudioLevels,
+  byStart,
   decodeLevelSeries,
   parseAudioLevelLine,
   segmentAt,
@@ -111,6 +112,7 @@ describe('audio level lines', () => {
 });
 
 describe('audio levels on the timeline', () => {
+  const buildSorted = (windows: AudioLevelWindow[]) => [...windows].sort(byStart);
   const window = (startMs: number, endMs: number): AudioLevelWindow => ({ startMs, endMs, phase: 'call', samples: 20 });
 
   it('positions windows from the recording start and clips them to the recording', () => {
@@ -125,6 +127,40 @@ describe('audio levels on the timeline', () => {
       [500, 1500],
       [8000, 10_000],
     ]);
+  });
+
+  it('finds the window under an offset when two legs overlap: the one that started last', () => {
+    // Leg A's windows run on while leg B starts half-way through one of them.
+    const legA = [window(0, 1000), window(1000, 2000), window(2000, 3000)];
+    const legB = [window(1500, 2500), window(2500, 3500)];
+    const segments = toTimelineSegments(buildSorted([...legA, ...legB]), 0, 10_000);
+
+    expect(segmentAt(segments, 1200)?.startOffsetMs).toBe(1000);
+    expect(segmentAt(segments, 1600)?.startOffsetMs).toBe(1500);
+    expect(segmentAt(segments, 2100)?.startOffsetMs).toBe(2000);
+    expect(segmentAt(segments, 3200)?.startOffsetMs).toBe(2500);
+    expect(segmentAt(segments, 3600)).toBeUndefined();
+  });
+
+  it('looks back past a short window of the other leg to the one that still covers the offset', () => {
+    const segments = toTimelineSegments(buildSorted([window(1000, 2000), window(1100, 1200)]), 0, 10_000);
+
+    expect(segmentAt(segments, 1500)?.startOffsetMs).toBe(1000);
+  });
+
+  it('sorts windows by start, which differs from end order when legs overlap', () => {
+    const level = (start: string, windowMs: number) =>
+      `timestamp="2026-11-04 12:33:${start} +0000 UTC" kind=measurement type=twilio_audio_level value_samples=20 value_window_ms=${windowMs} session_id=${SESSION}`;
+    // Ends at :03 after starting at :01; the other ends at :02.500 after starting at :01.500.
+    const windows = buildAudioLevels(
+      [
+        { tsNs: '1', line: level('03.000', 2000) },
+        { tsNs: '2', line: level('02.500', 1000) },
+      ],
+      SESSION
+    );
+
+    expect(windows.map((entry) => entry.endMs - entry.startMs)).toEqual([2000, 1000]);
   });
 
   it('finds the window under an offset, and nothing in a gap', () => {

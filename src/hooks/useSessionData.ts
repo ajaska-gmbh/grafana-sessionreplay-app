@@ -230,20 +230,11 @@ export function useSessionData(params: {
         for await (const page of readForward(fetcher, journeyExpr, store.journeyCursorMs(fallbackMs), nowMs)) {
           store.addJourneyLines(page);
         }
-        for await (const page of readForward(
-          fetcher,
-          audioLevelsQuery(sessionId),
-          store.audioLevelCursorMs(fallbackMs),
-          nowMs
-        )) {
-          store.addAudioLevelLines(page);
-        }
         if (!cancelled) {
           setState((previous) => ({
             ...previous,
             tracks: store.tracks,
             journey: store.journey,
-            audioLevels: store.audioLevels,
             skippedEvents: store.skipped,
             unresolvedStylesheets: store.unresolvedStylesheets,
             droppedStylesheets: store.droppedStylesheets,
@@ -255,6 +246,24 @@ export function useSessionData(params: {
         if (!cancelled) {
           setState((previous) => ({ ...previous, liveError: errorMessage(error) }));
         }
+      }
+      // After the replay and journey are out, and on its own: a failing or slow
+      // level query must never hold up or break the live replay. The next poll
+      // retries from the same cursor.
+      try {
+        for await (const page of readForward(
+          fetcher,
+          audioLevelsQuery(sessionId),
+          store.audioLevelCursorMs(fallbackMs),
+          nowMs
+        )) {
+          store.addAudioLevelLines(page);
+        }
+        if (!cancelled) {
+          setState((previous) => ({ ...previous, audioLevels: store.audioLevels }));
+        }
+      } catch {
+        // The graph lags until the next poll.
       }
       if (!cancelled) {
         timer = setTimeout(poll, LIVE_POLL_MS);

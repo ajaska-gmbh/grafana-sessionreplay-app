@@ -60,6 +60,23 @@ describe('useSessionData audio levels', () => {
     }
   });
 
+  it('keeps the live replay going when the level query fails during live polling', async () => {
+    const { result, unmount } = renderHook(() =>
+      useSessionData({ lokiUid: 'loki', sessionId: SESSION, from: 1_000, to: 2_000, live: true })
+    );
+    try {
+      await waitFor(() => expect(result.current.loadingAudioLevels).toBe(false));
+      fetcherState.failAudio = true;
+      const before = queries.length;
+      // Two more live polls, each asking for replay, journey and levels.
+      await waitFor(() => expect(queries.filter(isAudioQuery).length).toBeGreaterThanOrEqual(3), { timeout: 10_000 });
+      expect(queries.length).toBeGreaterThan(before);
+      expect(result.current.liveError).toBeUndefined();
+    } finally {
+      unmount();
+    }
+  }, 15_000);
+
   it('shows the replay and the journey even when the audio levels cannot be loaded', async () => {
     fetcherState.failAudio = true;
     const { result } = renderHook(() =>

@@ -20,6 +20,7 @@ export const testIds = {
     audioLevels: 'data-testid player-audio-levels',
     audioAgent: 'data-testid player-audio-agent',
     audioCustomer: 'data-testid player-audio-customer',
+    audioPlayhead: 'data-testid player-audio-playhead',
   },
   journey: {
     container: 'data-testid journey-container',

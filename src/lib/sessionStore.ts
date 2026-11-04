@@ -1,5 +1,5 @@
 import type { eventWithTime } from '@grafana/rrweb-types';
-import { buildAudioLevels, type AudioLevelWindow } from './audioLevels';
+import { byStart, parseAudioLevelLine, type AudioLevelWindow } from './audioLevels';
 import { buildJourney, type JourneyEvent } from './journey';
 import { compareNs } from './loki';
 import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from './replayEvents';
@@ -18,7 +18,8 @@ export class SessionStore {
   private readonly known = new Map<string, DecodedReplayEvent>();
   private readonly stylesheets = new StylesheetResolver();
   private readonly journeyLines = new Map<string, LokiLine>();
-  private readonly audioLevelLines = new Map<string, LokiLine>();
+  /** Keys of the level lines seen; only new lines are parsed. */
+  private readonly audioLevelKeys = new Set<string>();
   private replayCursorNs?: string;
   private journeyCursorNs?: string;
   private audioLevelCursorNs?: string;
@@ -80,16 +81,21 @@ export class SessionStore {
     if (lines.length === 0) {
       return;
     }
-    let added = false;
+    const added: AudioLevelWindow[] = [];
     for (const entry of lines) {
       const key = `${entry.tsNs}\u0000${entry.line}`;
-      if (!this.audioLevelLines.has(key)) {
-        this.audioLevelLines.set(key, entry);
-        added = true;
+      if (this.audioLevelKeys.has(key)) {
+        continue;
+      }
+      this.audioLevelKeys.add(key);
+      const window = parseAudioLevelLine(entry.tsNs, entry.line, this.sessionId);
+      if (window) {
+        added.push(window);
       }
     }
-    if (added) {
-      this.audioLevels = buildAudioLevels(this.audioLevelLines.values(), this.sessionId);
+    if (added.length > 0) {
+      // A new array, so React sees the change; earlier windows are not parsed again.
+      this.audioLevels = [...this.audioLevels, ...added].sort(byStart);
     }
     this.audioLevelCursorNs = maxNs(this.audioLevelCursorNs, lines);
   }

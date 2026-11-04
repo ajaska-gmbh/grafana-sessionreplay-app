@@ -115,7 +115,12 @@ export function buildAudioLevels(entries: Iterable<LokiLine>, sessionId: string)
       windows.push(window);
     }
   }
-  return windows.sort((a, b) => a.endMs - b.endMs);
+  return windows.sort(byStart);
+}
+
+/** Start, then end: windows of two legs at once overlap, so end order alone is not start order. */
+export function byStart(a: AudioLevelWindow, b: AudioLevelWindow): number {
+  return a.startMs - b.startMs || a.endMs - b.endMs;
 }
 
 /** A window positioned on the replay timeline (ms from the recording start). */
@@ -166,18 +171,32 @@ export function readingAt(
   return levels[Math.min(levels.length - 1, Math.max(0, index))];
 }
 
-/** The window at a timeline offset, for the hover readout. */
+/** How many windows before the last one starting at an offset may still cover it (legs at once). */
+const OVERLAP_LOOKBACK = 8;
+
+/**
+ * The window at a timeline offset, for the hover readout. Segments are sorted
+ * by start (byStart). Windows of one leg follow each other; when two legs run
+ * at once (a redial while the old leg ends), a few overlap, hence the
+ * look-back. With several, the one that started last wins.
+ */
 export function segmentAt(segments: AudioLevelSegment[], offsetMs: number): AudioLevelSegment | undefined {
+  // The last segment that starts at or before the offset.
   let low = 0;
   let high = segments.length - 1;
+  let last = -1;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    const segment = segments[mid];
-    if (offsetMs < segment.startOffsetMs) {
-      high = mid - 1;
-    } else if (offsetMs >= segment.endOffsetMs) {
+    if (segments[mid].startOffsetMs <= offsetMs) {
+      last = mid;
       low = mid + 1;
     } else {
+      high = mid - 1;
+    }
+  }
+  for (let index = last; index >= 0 && index > last - OVERLAP_LOOKBACK; index--) {
+    const segment = segments[index];
+    if (offsetMs < segment.endOffsetMs) {
       return segment;
     }
   }

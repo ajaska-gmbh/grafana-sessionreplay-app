@@ -172,6 +172,60 @@ export function describeSegment(segment: AudioLevelSegment, offsetMs?: number): 
   return parts.join(' · ');
 }
 
+interface RowProps {
+  label: string;
+  paths: Paths;
+  color: string;
+  colors: Colors;
+  testId: string;
+  totalMs: number;
+  onHover: (offsetMs: number | undefined) => void;
+  onSeek: (offsetMs: number) => void;
+}
+
+interface Colors {
+  idle: string;
+  silent: string;
+  noData: string;
+  hidden: string;
+}
+
+/**
+ * One channel's SVG. Memoised: it only changes with new levels, never with the
+ * playhead, so long sessions are not redrawn on every frame of playback.
+ */
+const Row = React.memo(function Row({ label, paths, color, colors, testId, totalMs, onHover, onSeek }: RowProps) {
+  const styles = useStyles2(getStyles);
+  const offsetAt = (event: React.MouseEvent<SVGSVGElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    return box.width > 0 ? ((event.clientX - box.left) / box.width) * totalMs : 0;
+  };
+  return (
+    <div className={styles.row}>
+      <span className={styles.label}>{label}</span>
+      <svg
+        className={styles.svg}
+        viewBox={`0 0 ${WIDTH} ${ROW_HEIGHT + 1 + STRIP_HEIGHT}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`${label} level over time`}
+        data-testid={testId}
+        onMouseMove={(event) => onHover(offsetAt(event))}
+        onMouseLeave={() => onHover(undefined)}
+        onClick={(event) => onSeek(offsetAt(event))}
+      >
+        <path d={paths.hidden} fill={colors.hidden} fillOpacity={0.15} />
+        <path d={paths.max} fill={color} fillOpacity={0.3} />
+        <path d={paths.avg} fill={color} />
+        <path d={paths.idleMax} fill={colors.idle} fillOpacity={0.2} />
+        <path d={paths.idleAvg} fill={colors.idle} fillOpacity={0.6} />
+        <path d={paths.silent} fill={colors.silent} data-testid={`${testId}-silent`} />
+        <path d={paths.noData} fill={colors.noData} data-testid={`${testId}-nodata`} />
+      </svg>
+    </div>
+  );
+});
+
 /**
  * The dialer's audio levels under the replay timeline: the agent's microphone
  * and the call audio the agent hears, each on its own row, on the same time
@@ -184,64 +238,57 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, onSeek }: Audi
   const agent = useMemo(() => channelPaths(segments, 'agent', totalMs), [segments, totalMs]);
   const customer = useMemo(() => channelPaths(segments, 'customer', totalMs), [segments, totalMs]);
   const hasCall = useMemo(() => segments.some((segment) => segment.phase === 'call'), [segments]);
+  const colors = useMemo<Colors & { agent: string; customer: string }>(
+    () => ({
+      agent: theme.visualization.getColorByName('blue'),
+      customer: theme.visualization.getColorByName('green'),
+      idle: theme.colors.text.secondary,
+      silent: theme.colors.error.main,
+      noData: theme.colors.warning.main,
+      hidden: theme.colors.text.disabled,
+    }),
+    [theme]
+  );
 
   if (totalMs <= 0 || segments.length === 0) {
     return null;
   }
 
   const hovered = hoverMs === undefined ? undefined : segmentAt(segments, hoverMs);
-  const offsetAt = (event: React.MouseEvent<SVGSVGElement>) => {
-    const box = event.currentTarget.getBoundingClientRect();
-    return box.width > 0 ? ((event.clientX - box.left) / box.width) * totalMs : 0;
-  };
-  const playhead = x(offsetMs, totalMs);
-  const colors = {
-    agent: theme.visualization.getColorByName('blue'),
-    customer: theme.visualization.getColorByName('green'),
-    idle: theme.colors.text.secondary,
-    silent: theme.colors.error.main,
-    noData: theme.colors.warning.main,
-    hidden: theme.colors.text.disabled,
-  };
-
-  const row = (label: string, paths: Paths, color: string, testId: string) => (
-    <div className={styles.row}>
-      <span className={styles.label}>{label}</span>
-      <svg
-        className={styles.svg}
-        viewBox={`0 0 ${WIDTH} ${ROW_HEIGHT + 1 + STRIP_HEIGHT}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`${label} level over time`}
-        data-testid={testId}
-        onMouseMove={(event) => setHoverMs(offsetAt(event))}
-        onMouseLeave={() => setHoverMs(undefined)}
-        onClick={(event) => onSeek(offsetAt(event))}
-      >
-        <path d={paths.hidden} fill={colors.hidden} fillOpacity={0.15} />
-        <path d={paths.max} fill={color} fillOpacity={0.3} />
-        <path d={paths.avg} fill={color} />
-        <path d={paths.idleMax} fill={colors.idle} fillOpacity={0.2} />
-        <path d={paths.idleAvg} fill={colors.idle} fillOpacity={0.6} />
-        <path d={paths.silent} fill={colors.silent} data-testid={`${testId}-silent`} />
-        <path d={paths.noData} fill={colors.noData} data-testid={`${testId}-nodata`} />
-        <line
-          x1={playhead}
-          x2={playhead}
-          y1={0}
-          y2={ROW_HEIGHT + 1 + STRIP_HEIGHT}
-          stroke={theme.colors.text.primary}
-          strokeWidth={1.5}
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-    </div>
-  );
+  const playheadPercent = (Math.min(totalMs, Math.max(0, offsetMs)) / totalMs) * 100;
 
   return (
     <div className={styles.container} data-testid={testIds.player.audioLevels}>
-      {row('Agent mic', agent, colors.agent, testIds.player.audioAgent)}
-      {hasCall && row('Customer audio', customer, colors.customer, testIds.player.audioCustomer)}
+      <div className={styles.rows}>
+        <Row
+          label="Agent mic"
+          paths={agent}
+          color={colors.agent}
+          colors={colors}
+          testId={testIds.player.audioAgent}
+          totalMs={totalMs}
+          onHover={setHoverMs}
+          onSeek={onSeek}
+        />
+        {hasCall && (
+          <Row
+            label="Customer audio"
+            paths={customer}
+            color={colors.customer}
+            colors={colors}
+            testId={testIds.player.audioCustomer}
+            totalMs={totalMs}
+            onHover={setHoverMs}
+            onSeek={onSeek}
+          />
+        )}
+        {/* An HTML overlay, so moving it repaints a line, not the graph. */}
+        <div
+          className={styles.playhead}
+          style={{ left: `${playheadPercent}%` }}
+          data-testid={testIds.player.audioPlayhead}
+        />
+      </div>
       <div className={styles.readout} aria-live="polite">
         {hovered ? (
           <>
@@ -265,7 +312,17 @@ const getStyles = (theme: GrafanaTheme2) => ({
     gap: theme.spacing(0.25),
     paddingTop: theme.spacing(0.5),
   }),
+  rows: css({ position: 'relative', display: 'flex', flexDirection: 'column', gap: theme.spacing(0.25) }),
   row: css({ position: 'relative' }),
+  playhead: css({
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 2,
+    marginLeft: -1,
+    background: theme.colors.text.primary,
+    pointerEvents: 'none',
+  }),
   label: css({
     position: 'absolute',
     top: 0,

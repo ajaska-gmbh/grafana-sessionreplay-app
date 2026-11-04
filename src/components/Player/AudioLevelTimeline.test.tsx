@@ -146,6 +146,21 @@ describe('AudioLevelTimeline', () => {
     expect(onSeek).toHaveBeenCalledWith(5000);
   });
 
+  it('moves the playhead as an overlay, without redrawing the rows', () => {
+    const segments = [segment(0), segment(5000)];
+    const { rerender } = render(
+      <AudioLevelTimeline segments={segments} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />
+    );
+    const agentPath = screen.getByTestId(testIds.player.audioAgent).querySelector('path:nth-of-type(3)');
+
+    rerender(<AudioLevelTimeline segments={segments} totalMs={10_000} offsetMs={2500} onSeek={jest.fn()} />);
+
+    expect(screen.getByTestId(testIds.player.audioPlayhead)).toHaveStyle({ left: '25%' });
+    expect(screen.getByTestId(testIds.player.audioAgent).querySelector('line')).toBeNull();
+    // Same element, same shape: the row was not rebuilt.
+    expect(screen.getByTestId(testIds.player.audioAgent).querySelector('path:nth-of-type(3)')).toBe(agentPath);
+  });
+
   it('reads out the window under the pointer', () => {
     render(<AudioLevelTimeline segments={[segment(5000)]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />);
     const agent = screen.getByTestId(testIds.player.audioAgent);
