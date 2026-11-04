@@ -1,0 +1,126 @@
+diff --git a/node_modules/@grafana/rrweb/dist/rrweb.cjs b/node_modules/@grafana/rrweb/dist/rrweb.cjs
+index 410eacd..dc5d84b 100644
+--- a/node_modules/@grafana/rrweb/dist/rrweb.cjs
++++ b/node_modules/@grafana/rrweb/dist/rrweb.cjs
+@@ -17260,14 +17260,17 @@ class Replayer {
+       }
+     }
+     const mirror2 = this.usingVirtualDom ? this.virtualDom.mirror : this.mirror;
+-    d.removes = d.removes.filter((mutation) => {
++    // ajaska patch: filter into a local, never into the event itself. The event is
++    // applied again on every seek, when its nodes may already be gone; writing the
++    // filtered list back would drop those removals for good.
++    const removes = d.removes.filter((mutation) => {
+       if (!mirror2.getNode(mutation.id)) {
+         this.warnNodeNotFound(d, mutation.id);
+         return false;
+       }
+       return true;
+     });
+-    d.removes.forEach((mutation) => {
++    removes.forEach((mutation) => {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+@@ -17483,7 +17486,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
+@@ -17503,7 +17506,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
+diff --git a/node_modules/@grafana/rrweb/dist/rrweb.js b/node_modules/@grafana/rrweb/dist/rrweb.js
+index 054a7e0..d4078f4 100644
+--- a/node_modules/@grafana/rrweb/dist/rrweb.js
++++ b/node_modules/@grafana/rrweb/dist/rrweb.js
+@@ -17258,14 +17258,17 @@ class Replayer {
+       }
+     }
+     const mirror2 = this.usingVirtualDom ? this.virtualDom.mirror : this.mirror;
+-    d.removes = d.removes.filter((mutation) => {
++    // ajaska patch: filter into a local, never into the event itself. The event is
++    // applied again on every seek, when its nodes may already be gone; writing the
++    // filtered list back would drop those removals for good.
++    const removes = d.removes.filter((mutation) => {
+       if (!mirror2.getNode(mutation.id)) {
+         this.warnNodeNotFound(d, mutation.id);
+         return false;
+       }
+       return true;
+     });
+-    d.removes.forEach((mutation) => {
++    removes.forEach((mutation) => {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+@@ -17481,7 +17484,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
+@@ -17501,7 +17504,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
+diff --git a/node_modules/@grafana/rrweb/dist/rrweb.umd.cjs b/node_modules/@grafana/rrweb/dist/rrweb.umd.cjs
+index 5bec36d..46994a2 100644
+--- a/node_modules/@grafana/rrweb/dist/rrweb.umd.cjs
++++ b/node_modules/@grafana/rrweb/dist/rrweb.umd.cjs
+@@ -17248,14 +17248,17 @@ class Replayer {
+       }
+     }
+     const mirror2 = this.usingVirtualDom ? this.virtualDom.mirror : this.mirror;
+-    d.removes = d.removes.filter((mutation) => {
++    // ajaska patch: filter into a local, never into the event itself. The event is
++    // applied again on every seek, when its nodes may already be gone; writing the
++    // filtered list back would drop those removals for good.
++    const removes = d.removes.filter((mutation) => {
+       if (!mirror2.getNode(mutation.id)) {
+         this.warnNodeNotFound(d, mutation.id);
+         return false;
+       }
+       return true;
+     });
+-    d.removes.forEach((mutation) => {
++    removes.forEach((mutation) => {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+@@ -17469,7 +17472,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
+@@ -17489,7 +17492,7 @@ class Replayer {
+       var _a2;
+       const target = mirror2.getNode(mutation.id);
+       if (!target) {
+-        if (d.removes.find((r2) => r2.id === mutation.id)) {
++        if (removes.find((r2) => r2.id === mutation.id)) {
+           return;
+         }
+         return this.warnNodeNotFound(d, mutation.id);
