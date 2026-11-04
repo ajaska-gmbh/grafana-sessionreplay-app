@@ -41,6 +41,10 @@ jobs:
           echo "PLUGIN_ID=$(node -p "require('./src/plugin.json').id")" >> "$GITHUB_ENV"
 
       - run: npm ci
+      # The repo installs with ignore-scripts (.npmrc), so the versioned
+      # dependency patches in patches/ are applied explicitly; fails if one no
+      # longer applies.
+      - run: npm run patch:apply
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:ci

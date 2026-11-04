@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply dependency patches (patches/; install scripts are off)
+        run: npm run patch:apply
+
       - name: Build plugin
         run: npm run build
 
