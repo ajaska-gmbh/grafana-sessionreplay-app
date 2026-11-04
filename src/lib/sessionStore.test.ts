@@ -47,6 +47,21 @@ describe('SessionStore', () => {
     expect(store.journeyCursorMs(0)).toBe(6000);
   });
 
+  it('keeps the audio levels of overlapping polls once, sorted, and moves their cursor', () => {
+    const level = (time: string, avg: number) =>
+      `timestamp="2026-11-04 12:33:${time} +0000 UTC" kind=measurement type=twilio_audio_level value_agent_mic_avg=${avg} value_samples=20 value_window_ms=1000 session_id=${SESSION_ID}`;
+    const store = new SessionStore(SESSION_ID);
+    const first = { tsNs: '1793795622000000000', line: level('42.000', 0.1) };
+    const second = { tsNs: '1793795623000000000', line: level('43.000', 0.2) };
+
+    store.addAudioLevelLines([second, first]);
+    store.addAudioLevelLines([second]);
+
+    expect(store.audioLevels.map((window) => window.agentAvg)).toEqual([0.1, 0.2]);
+    expect(store.audioLevelCursorMs(0)).toBe(1793795623000);
+    expect(new SessionStore(SESSION_ID).audioLevelCursorMs(42)).toBe(42);
+  });
+
   it('uses the fallback cursor before anything was loaded', () => {
     const store = new SessionStore(SESSION_ID);
 

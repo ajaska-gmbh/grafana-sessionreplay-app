@@ -7,6 +7,7 @@ import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import { SessionStore } from '../lib/sessionStore';
 import { journeyQuery } from '../lib/journeyQuery';
+import { audioLevelsQuery, type AudioLevelWindow } from '../lib/audioLevels';
 
 /** How often live mode asks Loki for new events. */
 export const LIVE_POLL_MS = 3000;
@@ -21,8 +22,11 @@ export interface SessionDataState {
    */
   tracks: eventWithTime[][];
   journey: JourneyEvent[];
+  /** The dialer's per-second audio levels for the level graph (empty for other apps). */
+  audioLevels: AudioLevelWindow[];
   loadingReplay: boolean;
   loadingJourney: boolean;
+  loadingAudioLevels: boolean;
   skippedEvents: number;
   unresolvedStylesheets: number;
   droppedStylesheets: number;
@@ -99,8 +103,10 @@ export function useSessionData(params: {
   const [state, setState] = useState<SessionDataState>({
     tracks: [],
     journey: [],
+    audioLevels: [],
     loadingReplay: true,
     loadingJourney: true,
+    loadingAudioLevels: true,
     skippedEvents: 0,
     unresolvedStylesheets: 0,
     droppedStylesheets: 0,
@@ -121,6 +127,7 @@ export function useSessionData(params: {
       update({
         tracks: store.tracks,
         journey: store.journey,
+        audioLevels: store.audioLevels,
         skippedEvents: store.skipped,
         unresolvedStylesheets: store.unresolvedStylesheets,
         droppedStylesheets: store.droppedStylesheets,
@@ -138,7 +145,7 @@ export function useSessionData(params: {
       } else {
         session = await locateSession(fetcher, sessionId, nowMs);
         if (!session) {
-          update({ notFound: true, loadingReplay: false, loadingJourney: false });
+          update({ notFound: true, loadingReplay: false, loadingJourney: false, loadingAudioLevels: false });
           return;
         }
         range = sessionRange(session, nowMs);
@@ -169,9 +176,25 @@ export function useSessionData(params: {
         update({ loadingJourney: false });
       })();
 
-      await Promise.all([replay, journey]);
+      // Optional: a failure here must not hide the replay or the journey.
+      const audioLevels = (async () => {
+        try {
+          for await (const page of readForward(fetcher, audioLevelsQuery(sessionId), range.from, range.to)) {
+            if (cancelled) {
+              return;
+            }
+            store.addAudioLevelLines(page);
+            publish();
+          }
+        } catch {
+          // The graph stays empty.
+        }
+        update({ loadingAudioLevels: false });
+      })();
+
+      await Promise.all([replay, journey, audioLevels]);
     })().catch((error: unknown) => {
-      update({ error: errorMessage(error), loadingReplay: false, loadingJourney: false });
+      update({ error: errorMessage(error), loadingReplay: false, loadingJourney: false, loadingAudioLevels: false });
     });
 
     return () => {
@@ -207,11 +230,20 @@ export function useSessionData(params: {
         for await (const page of readForward(fetcher, journeyExpr, store.journeyCursorMs(fallbackMs), nowMs)) {
           store.addJourneyLines(page);
         }
+        for await (const page of readForward(
+          fetcher,
+          audioLevelsQuery(sessionId),
+          store.audioLevelCursorMs(fallbackMs),
+          nowMs
+        )) {
+          store.addAudioLevelLines(page);
+        }
         if (!cancelled) {
           setState((previous) => ({
             ...previous,
             tracks: store.tracks,
             journey: store.journey,
+            audioLevels: store.audioLevels,
             skippedEvents: store.skipped,
             unresolvedStylesheets: store.unresolvedStylesheets,
             droppedStylesheets: store.droppedStylesheets,

@@ -5,9 +5,11 @@ import './rrweb.css';
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { GrafanaTheme2 } from '@grafana/data';
 import { Badge, Dropdown, IconButton, Menu, ToolbarButton, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
+import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock } from '../../lib/format';
 import { liveStartIndex, pageAt, pageChanges } from '../../lib/playerEvents';
 import { testIds } from '../testIds';
+import { AudioLevelTimeline } from './AudioLevelTimeline';
 
 export const SPEEDS = [0.5, 1, 2, 4, 8];
 const SKIP_MS = 10_000;
@@ -32,6 +34,8 @@ export interface ReplayPlayerProps {
   initialOffsetMs?: number;
   seekRequest?: SeekRequest;
   markers?: TimelineMarker[];
+  /** The dialer's per-second audio levels, drawn under the timeline (epoch ms). */
+  audioLevels?: AudioLevelWindow[];
   onTimeChange?: (offsetMs: number, startTimeMs: number) => void;
   onShare?: (offsetMs: number) => Promise<void> | void;
   autoPlay?: boolean;
@@ -60,6 +64,7 @@ export function ReplayPlayer({
   initialOffsetMs = 0,
   seekRequest,
   markers = [],
+  audioLevels = [],
   onTimeChange,
   onShare,
   autoPlay = false,
@@ -85,6 +90,7 @@ export function ReplayPlayer({
   }, [playing]);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
+  const [startTime, setStartTime] = useState<number>();
   const [speed, setSpeed] = useState(1);
   const [skipInactive, setSkipInactive] = useState(true);
   const [skipping, setSkipping] = useState(false);
@@ -99,6 +105,10 @@ export function ReplayPlayer({
   }, [liveReceivedAtMs]);
 
   const pages = useMemo(() => pageChanges(events), [events]);
+  const audioSegments = useMemo(
+    () => (startTime === undefined || total <= 0 ? [] : toTimelineSegments(audioLevels, startTime, total)),
+    [audioLevels, startTime, total]
+  );
 
   const rescale = useCallback(() => {
     const replayer = replayerRef.current;
@@ -125,6 +135,7 @@ export function ReplayPlayer({
     const current = Math.min(replayer.getCurrentTime(), meta.totalTime);
     setOffset(current);
     setTotal(meta.totalTime);
+    setStartTime(meta.startTime);
     onTimeChange?.(current, meta.startTime);
     if (live) {
       // Playback trails the newest event (buffer), which itself arrived some time ago.
@@ -444,6 +455,9 @@ export function ReplayPlayer({
                   />
                 </Tooltip>
               ))}
+            {audioSegments.length > 0 && (
+              <AudioLevelTimeline segments={audioSegments} totalMs={total} offsetMs={offset} onSeek={seek} />
+            )}
           </div>
 
           <div className={styles.controls}>
