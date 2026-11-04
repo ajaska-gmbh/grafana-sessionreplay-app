@@ -4,9 +4,20 @@ import { Replayer } from '@grafana/rrweb';
 import './rrweb.css';
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { GrafanaTheme2 } from '@grafana/data';
-import { Badge, Dropdown, IconButton, Menu, ToolbarButton, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
+import {
+  Badge,
+  Dropdown,
+  Icon,
+  IconButton,
+  Input,
+  Menu,
+  ToolbarButton,
+  Tooltip,
+  useStyles2,
+  useTheme2,
+} from '@grafana/ui';
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
-import { formatClock } from '../../lib/format';
+import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
 import { liveStartIndex, pageAt, pageChanges } from '../../lib/playerEvents';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
@@ -94,6 +105,9 @@ export function ReplayPlayer({
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [startTime, setStartTime] = useState<number>();
+  /** The "go to" field: what is typed, and whether the last attempt failed. */
+  const [goTo, setGoTo] = useState('');
+  const [goToInvalid, setGoToInvalid] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [skipInactive, setSkipInactive] = useState(true);
   const [skipping, setSkipping] = useState(false);
@@ -409,6 +423,11 @@ export function ReplayPlayer({
       {live ? (
         <div className={styles.controls}>
           <Badge text="LIVE" color="red" icon="circle-mono" />
+          {startTime !== undefined && (
+            <span className={styles.wallClock} data-testid={testIds.player.wallClock}>
+              {formatWallClock(startTime + offset)}
+            </span>
+          )}
           <span className={styles.clock} data-testid={testIds.player.clock}>
             {liveLagMs < 60_000 ? `~${Math.round(liveLagMs / 1000)} s behind` : `~${formatClock(liveLagMs)} behind`}
           </span>
@@ -462,7 +481,13 @@ export function ReplayPlayer({
             </div>
             {audioSegments.length > 0 && (
               <div className={styles.graphTrack}>
-                <AudioLevelTimeline segments={audioSegments} totalMs={total} offsetMs={offset} onSeek={seek} />
+                <AudioLevelTimeline
+                  segments={audioSegments}
+                  totalMs={total}
+                  offsetMs={offset}
+                  startTimeMs={startTime}
+                  onSeek={seek}
+                />
               </div>
             )}
           </div>
@@ -471,6 +496,13 @@ export function ReplayPlayer({
             <span className={styles.clock} data-testid={testIds.player.clock}>
               {formatClock(offset)} / {formatClock(total)}
             </span>
+            {startTime !== undefined && (
+              <Tooltip content="Time of day at the playhead (your time zone)">
+                <span className={styles.wallClock} data-testid={testIds.player.wallClock}>
+                  {formatWallClock(startTime + offset)}
+                </span>
+              </Tooltip>
+            )}
             <IconButton name="backward" tooltip="Skip backward 10 seconds" onClick={() => seek(offset - SKIP_MS)} />
             <IconButton
               name={playing ? 'pause' : 'play'}
@@ -480,6 +512,42 @@ export function ReplayPlayer({
               data-testid={testIds.player.play}
             />
             <IconButton name="forward" tooltip="Skip forward 10 seconds" onClick={() => seek(offset + SKIP_MS)} />
+            {startTime !== undefined && (
+              <Tooltip
+                content={
+                  goToInvalid
+                    ? `Not a time in this recording (${formatWallClock(startTime)}–${formatWallClock(startTime + total)})`
+                    : 'Jump to a time of day: hh:mm or hh:mm:ss, then Enter'
+                }
+              >
+                <div className={styles.goTo}>
+                  <Input
+                    aria-label="Go to time"
+                    placeholder="Go to hh:mm:ss"
+                    value={goTo}
+                    invalid={goToInvalid}
+                    width={18}
+                    prefix={<Icon name="clock-nine" />}
+                    onChange={(event) => {
+                      setGoTo(event.currentTarget.value);
+                      setGoToInvalid(false);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter') {
+                        return;
+                      }
+                      const target = wallClockOffset(goTo, startTime, total);
+                      if (target === undefined) {
+                        setGoToInvalid(true);
+                        return;
+                      }
+                      seek(target);
+                    }}
+                    data-testid={testIds.player.goTo}
+                  />
+                </div>
+              </Tooltip>
+            )}
             <div className={styles.spacer} />
             <Dropdown overlay={speedMenu} placement="top">
               <ToolbarButton variant="canvas" tooltip="Playback speed">
@@ -596,5 +664,13 @@ const getStyles = (theme: GrafanaTheme2) => ({
     padding: theme.spacing(0.5, 2, 1),
   }),
   clock: css({ fontVariantNumeric: 'tabular-nums', minWidth: 96 }),
+  wallClock: css({
+    fontVariantNumeric: 'tabular-nums',
+    color: theme.colors.text.secondary,
+    padding: theme.spacing(0.25, 0.75),
+    border: `1px solid ${theme.colors.border.weak}`,
+    borderRadius: theme.shape.radius.default,
+  }),
+  goTo: css({ marginLeft: theme.spacing(1) }),
   spacer: css({ flex: 1 }),
 });
