@@ -1,4 +1,5 @@
 import type { eventWithTime } from '@grafana/rrweb-types';
+import { byStart, parseAudioLevelLine, type AudioLevelWindow } from './audioLevels';
 import { buildJourney, type JourneyEvent } from './journey';
 import { compareNs } from './loki';
 import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from './replayEvents';
@@ -17,11 +18,16 @@ export class SessionStore {
   private readonly known = new Map<string, DecodedReplayEvent>();
   private readonly stylesheets = new StylesheetResolver();
   private readonly journeyLines = new Map<string, LokiLine>();
+  /** Keys of the level lines seen; only new lines are parsed. */
+  private readonly audioLevelKeys = new Set<string>();
   private replayCursorNs?: string;
   private journeyCursorNs?: string;
+  private audioLevelCursorNs?: string;
 
   tracks: eventWithTime[][] = [];
   journey: JourneyEvent[] = [];
+  /** The dialer's per-second audio levels (empty for other apps), sorted. */
+  audioLevels: AudioLevelWindow[] = [];
   skipped = 0;
   /** Stylesheet references (ajaska-css) that could not be resolved; those render unstyled. */
   unresolvedStylesheets = 0;
@@ -69,6 +75,33 @@ export class SessionStore {
   /** Where the next poll of each stream starts (epoch ms, inclusive). */
   replayCursorMs(fallbackMs: number): number {
     return this.replayCursorNs ? nsToMs(this.replayCursorNs) : fallbackMs;
+  }
+
+  addAudioLevelLines(lines: LokiLine[]): void {
+    if (lines.length === 0) {
+      return;
+    }
+    const added: AudioLevelWindow[] = [];
+    for (const entry of lines) {
+      const key = `${entry.tsNs}\u0000${entry.line}`;
+      if (this.audioLevelKeys.has(key)) {
+        continue;
+      }
+      this.audioLevelKeys.add(key);
+      const window = parseAudioLevelLine(entry.tsNs, entry.line, this.sessionId);
+      if (window) {
+        added.push(window);
+      }
+    }
+    if (added.length > 0) {
+      // A new array, so React sees the change; earlier windows are not parsed again.
+      this.audioLevels = [...this.audioLevels, ...added].sort(byStart);
+    }
+    this.audioLevelCursorNs = maxNs(this.audioLevelCursorNs, lines);
+  }
+
+  audioLevelCursorMs(fallbackMs: number): number {
+    return this.audioLevelCursorNs ? nsToMs(this.audioLevelCursorNs) : fallbackMs;
   }
 
   journeyCursorMs(fallbackMs: number): number {

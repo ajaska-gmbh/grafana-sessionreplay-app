@@ -1,5 +1,11 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
+// The real parser, counted: the store must not parse a line twice.
+jest.mock('./audioLevels', () => {
+  const actual = jest.requireActual('./audioLevels');
+  return { ...actual, parseAudioLevelLine: jest.fn(actual.parseAudioLevelLine) };
+});
 
+import { parseAudioLevelLine } from './audioLevels';
 import { LIVE_WINDOW_MS, SessionStore } from './sessionStore';
 import { fetchLine, logLine, replayLine, SESSION_ID } from './fixtures';
 
@@ -45,6 +51,40 @@ describe('SessionStore', () => {
 
     expect(store.journey).toHaveLength(2);
     expect(store.journeyCursorMs(0)).toBe(6000);
+  });
+
+  it('keeps the audio levels of overlapping polls once, sorted, and moves their cursor', () => {
+    const level = (time: string, avg: number) =>
+      `timestamp="2026-11-04 12:33:${time} +0000 UTC" kind=measurement type=twilio_audio_level value_agent_mic_avg=${avg} value_samples=20 value_window_ms=1000 session_id=${SESSION_ID}`;
+    const store = new SessionStore(SESSION_ID);
+    const first = { tsNs: '1793795622000000000', line: level('42.000', 0.1) };
+    const second = { tsNs: '1793795623000000000', line: level('43.000', 0.2) };
+
+    store.addAudioLevelLines([second, first]);
+    store.addAudioLevelLines([second]);
+
+    expect(store.audioLevels.map((window) => window.agentAvg)).toEqual([0.1, 0.2]);
+    expect(store.audioLevelCursorMs(0)).toBe(1793795623000);
+    expect(new SessionStore(SESSION_ID).audioLevelCursorMs(42)).toBe(42);
+  });
+
+  it('parses each level line once, however often polls repeat it', () => {
+    const spy = jest.mocked(parseAudioLevelLine);
+    spy.mockClear();
+    const line = (second: number) => ({
+      tsNs: `17937956${20 + second}000000000`,
+      line: `timestamp="2026-11-04 12:33:${String(second).padStart(2, '0')}.000 +0000 UTC" kind=measurement type=twilio_audio_level value_samples=20 value_window_ms=1000 session_id=${SESSION_ID}`,
+    });
+    const store = new SessionStore(SESSION_ID);
+
+    store.addAudioLevelLines([line(1), line(2)]);
+    const first = store.audioLevels;
+    store.addAudioLevelLines([line(2), line(3)]);
+    store.addAudioLevelLines([line(3)]);
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(store.audioLevels).toHaveLength(3);
+    expect(store.audioLevels).not.toBe(first);
   });
 
   it('uses the fallback cursor before anything was loaded', () => {

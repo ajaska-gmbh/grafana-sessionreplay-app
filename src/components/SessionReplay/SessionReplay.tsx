@@ -175,6 +175,7 @@ export function SessionReplay(props: SessionReplayProps) {
             initialOffsetMs={initialOffsetMs}
             seekRequest={seekRequest}
             markers={markers}
+            audioLevels={data.audioLevels}
             onTimeChange={onTimeChange}
             onShare={onShare}
             live={live}

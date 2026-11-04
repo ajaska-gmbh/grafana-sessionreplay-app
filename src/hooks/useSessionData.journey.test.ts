@@ -19,7 +19,8 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { useSessionData } from './useSessionData';
 
 const HIDDEN = '!~ "(^| )type=(twilio_audio_level|telnyx_audio_level|twilio_mic_level_idle)( |$)"';
-const isJourneyQuery = (expr: string) => expr.startsWith('{source="faro"}');
+// The audio level graph has its own query on the same stream (useSessionData.audioLevels.test.ts).
+const isJourneyQuery = (expr: string) => expr.startsWith('{source="faro"}') && !expr.includes(' |~ ');
 
 describe('useSessionData', () => {
   beforeEach(() => {
