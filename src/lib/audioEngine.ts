@@ -109,7 +109,8 @@ export class CallAudioEngine {
       return;
     }
     const wallMs = state.startTimeMs === undefined ? undefined : state.startTimeMs + state.offsetMs;
-    const silent = !state.playing || state.speed > MAX_AUDIBLE_SPEED || wallMs === undefined;
+    // Silent while rrweb skips inactivity too: the playhead jumps further every frame than audio can follow.
+    const silent = !state.playing || state.skipping || state.speed > MAX_AUDIBLE_SPEED || wallMs === undefined;
 
     for (const name of CALL_AUDIO_TRACKS) {
       if (silent || !this.audible.has(name)) {

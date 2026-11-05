@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CallAudioEngine } from '../lib/audioEngine';
 import {
   audioSourcesOf,
   connectionLost,
+  onSessionClock,
+  type AudioSources,
   DEFAULT_AUDIBLE,
   losses,
   type CallAudioTrack,
@@ -58,9 +60,16 @@ export function useCallAudio(options: {
   const [volume, setVolume] = useState(1);
   const [stereo, setStereo] = useState(false);
 
-  // Opens no AudioContext until something is to be heard.
-  const [engine] = useState(() => new CallAudioEngine({ fetchAudio: fetchSegmentAudio, onError: setError }));
-  useEffect(() => () => engine.dispose(), [engine]);
+  // Made (and disposed) by an effect, so a remount gets a working one; opens no AudioContext until something is heard.
+  const engineRef = useRef<CallAudioEngine | null>(null);
+  useEffect(() => {
+    const engine = new CallAudioEngine({ fetchAudio: fetchSegmentAudio, onError: setError });
+    engineRef.current = engine;
+    return () => {
+      engine.dispose();
+      engineRef.current = null;
+    };
+  }, []);
 
   const fromMs = range?.from;
   const toMs = range?.to;
@@ -71,10 +80,13 @@ export function useCallAudio(options: {
     let cancelled = false;
     const load = () => {
       setLoading(true);
-      listSessionAudio(JSON.parse(sourcesKey), fromMs, toMs)
+      const sessionSources: AudioSources = JSON.parse(sourcesKey);
+      // The carrier's segments are filed on the recorder's clock: list around the session on that clock.
+      const offset = sessionSources.clockOffsetMs;
+      listSessionAudio(sessionSources, fromMs + Math.min(0, offset), toMs + Math.max(0, offset))
         .then((listed) => {
           if (!cancelled) {
-            setSegments(listed);
+            setSegments(onSessionClock(listed, offset));
             setError(undefined);
           }
         })
@@ -97,13 +109,13 @@ export function useCallAudio(options: {
     };
   }, [available, sourcesKey, fromMs, toMs, live]);
 
-  useEffect(() => engine.setSegments(segments), [engine, segments]);
-  useEffect(() => engine.setAudible(audible), [engine, audible]);
-  useEffect(() => engine.setVolume(volume), [engine, volume]);
-  useEffect(() => engine.setStereo(stereo), [engine, stereo]);
+  useEffect(() => engineRef.current?.setSegments(segments), [segments]);
+  useEffect(() => engineRef.current?.setAudible(audible), [audible]);
+  useEffect(() => engineRef.current?.setVolume(volume), [volume]);
+  useEffect(() => engineRef.current?.setStereo(stereo), [stereo]);
   useClockEffect(clock, (state) => {
     if (available) {
-      engine.sync(state);
+      engineRef.current?.sync(state);
     }
   });
 

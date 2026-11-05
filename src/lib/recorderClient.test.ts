@@ -30,7 +30,7 @@ describe('recorder client', () => {
     (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
 
     const audio = await listSessionAudio(
-      { browser: { env: 'ppdtesting-', agentId: 7 }, legSids: ['CA1', 'CA2'] },
+      { browser: { env: 'ppdtesting-', agentId: 7 }, clockOffsetMs: 0, legSids: ['CA1', 'CA2'] },
       0,
       3600_000
     );
@@ -51,7 +51,7 @@ describe('recorder client', () => {
     const fetch = jest.fn(() => of({ data: { segments: [] } }));
     (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
 
-    await listSessionAudio({ legSids: ['CA1'] }, 0, 50 * 3600_000);
+    await listSessionAudio({ clockOffsetMs: 0, legSids: ['CA1'] }, 0, 50 * 3600_000);
 
     expect(fetch).toHaveBeenCalledTimes(2);
   });

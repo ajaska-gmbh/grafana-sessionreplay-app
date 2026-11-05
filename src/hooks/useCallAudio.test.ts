@@ -43,7 +43,7 @@ describe('useCallAudio', () => {
     await waitFor(() => expect(result.current.segments.mic).toHaveLength(1));
     expect(result.current.available).toBe(true);
     expect(listSessionAudio).toHaveBeenCalledWith(
-      { browser: { env: 'ppdtesting-', agentId: 7 }, legSids: [] },
+      { browser: { env: 'ppdtesting-', agentId: 7 }, clockOffsetMs: 0, legSids: [] },
       0,
       60_000
     );

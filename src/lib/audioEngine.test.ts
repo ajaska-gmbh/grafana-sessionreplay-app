@@ -74,6 +74,7 @@ const clock = (patch: Partial<ClockState>): ClockState => ({
   startTimeMs: 1_000_000,
   playing: true,
   speed: 1,
+  skipping: false,
   ...patch,
 });
 const live = (sources: FakeSource[]) => sources.filter((s) => s.started && !s.stopped);
@@ -125,6 +126,21 @@ describe('call audio engine', () => {
 
     engine.sync(clock({ offsetMs: 20_000 }));
     expect(live(sources)).toHaveLength(0);
+  });
+
+  it('is silent, and fetches nothing, while the replay skips inactivity', async () => {
+    const { engine, sources, fetchAudio } = engineWith(
+      { mic: Array.from({ length: 100 }, (_, i) => seg('mic', 1_000_000 + i * 10_000)) },
+      ['mic']
+    );
+
+    for (let ms = 0; ms < 900_000; ms += 9_000) {
+      engine.sync(clock({ offsetMs: ms, skipping: true }));
+    }
+    await settle();
+
+    expect(live(sources)).toHaveLength(0);
+    expect(fetchAudio).not.toHaveBeenCalled();
   });
 
   it("plays at the replay's speed", async () => {

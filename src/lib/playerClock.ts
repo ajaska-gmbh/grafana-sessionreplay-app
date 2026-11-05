@@ -10,9 +10,11 @@ export interface ClockState {
   startTimeMs?: number;
   playing: boolean;
   speed: number;
+  /** rrweb is fast-forwarding through inactivity ("Skip inactivity"): the playhead jumps. */
+  skipping: boolean;
 }
 
-const INITIAL: ClockState = { offsetMs: 0, totalMs: 0, playing: false, speed: 1 };
+const INITIAL: ClockState = { offsetMs: 0, totalMs: 0, playing: false, speed: 1, skipping: false };
 
 /**
  * The player's time, outside React. The player writes it every frame; React

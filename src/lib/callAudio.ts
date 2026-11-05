@@ -46,6 +46,11 @@ export interface AudioSegment {
 export interface AudioSources {
   /** The agent's computer's recording, filed by environment and agent. */
   browser?: { env: string; agentId: number };
+  /**
+   * The recorder's clock minus the agent's computer's (which the replay and
+   * the browser's audio are on), as the browser measured it; 0 when unknown.
+   */
+  clockOffsetMs: number;
   /** The agent's legs, whose carrier streams are filed by CallSid. */
   legSids: string[];
 }
@@ -55,6 +60,7 @@ const RECORDING_CONTRACT = 'v1';
 /** Reads the session's recording events (contract v1); nothing for sessions without any. */
 export function audioSourcesOf(journey: JourneyEvent[]): AudioSources {
   let browser: AudioSources['browser'];
+  let clockOffsetMs = 0;
   const legSids = new Set<string>();
   for (const event of journey) {
     const a = event.attributes;
@@ -67,12 +73,33 @@ export function audioSourcesOf(journey: JourneyEvent[]): AudioSources {
       if (a.event_data_env && Number.isInteger(agentId) && agentId > 0) {
         browser = { env: a.event_data_env, agentId };
       }
+      const offset = Number(a.event_data_clock_offset_ms);
+      if (a.event_data_clock_offset_ms !== undefined && Number.isFinite(offset)) {
+        clockOffsetMs = offset;
+      }
     }
     if (a.event_name === 'recording.source-changed' && a.event_data_leg_sid) {
       legSids.add(a.event_data_leg_sid);
     }
   }
-  return { browser, legSids: [...legSids] };
+  return { browser, clockOffsetMs, legSids: [...legSids] };
+}
+
+/**
+ * The carrier's tracks onto the session's clock: the recorder stamps them with
+ * its own clock, the replay and the browser's tracks run on the agent's PC's.
+ */
+export function onSessionClock<T extends Record<CallAudioTrack, AudioSegment[]>>(tracks: T, clockOffsetMs: number): T {
+  if (clockOffsetMs === 0) {
+    return tracks;
+  }
+  const shift = (segments: AudioSegment[]) =>
+    segments.map((segment) => ({
+      ...segment,
+      startMs: segment.startMs - clockOffsetMs,
+      gaps: segment.gaps.map((gap) => ({ startMs: gap.startMs - clockOffsetMs, endMs: gap.endMs - clockOffsetMs })),
+    }));
+  return { ...tracks, agent: shift(tracks.agent), customer: shift(tracks.customer) };
 }
 
 /** The recorder's names for the tracks. */

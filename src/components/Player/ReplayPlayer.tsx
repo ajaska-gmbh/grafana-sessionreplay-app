@@ -279,8 +279,14 @@ export function ReplayPlayer({
         viewportRef.current = dimension as { width: number; height: number };
         rescale();
       });
-      replayer.on('skip-start', () => setSkipping(true));
-      replayer.on('skip-end', () => setSkipping(false));
+      replayer.on('skip-start', () => {
+        setSkipping(true);
+        clock.update({ skipping: true });
+      });
+      replayer.on('skip-end', () => {
+        setSkipping(false);
+        clock.update({ skipping: false });
+      });
 
       const start = Math.max(0, initialOffsetMs);
       if (autoPlay) {

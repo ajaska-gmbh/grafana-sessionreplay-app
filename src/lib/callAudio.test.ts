@@ -4,6 +4,7 @@ import {
   coverage,
   intersect,
   losses,
+  onSessionClock,
   segmentAt,
   subtract,
   trackOf,
@@ -48,11 +49,15 @@ describe('call audio', () => {
       event({ event_name: 'recording.source-changed', event_data_origin: 'leg', event_data_leg_sid: 'CA2' }),
     ]);
 
-    expect(sources).toEqual({ browser: { env: 'ppdtesting-', agentId: 7 }, legSids: ['CA1', 'CA2'] });
+    expect(sources).toEqual({ browser: { env: 'ppdtesting-', agentId: 7 }, clockOffsetMs: 0, legSids: ['CA1', 'CA2'] });
   });
 
   it('finds nothing in a session of another app, or of another contract version', () => {
-    expect(audioSourcesOf([event({ event_name: 'click' })])).toEqual({ browser: undefined, legSids: [] });
+    expect(audioSourcesOf([event({ event_name: 'click' })])).toEqual({
+      browser: undefined,
+      clockOffsetMs: 0,
+      legSids: [],
+    });
     expect(
       audioSourcesOf([
         event({
@@ -118,5 +123,31 @@ describe('call audio', () => {
     };
 
     expect(losses(tracks)).toEqual({ uplink: [], downlink: [] });
+  });
+
+  it("puts the carrier's tracks on the agent's computer's clock, which the replay runs on", () => {
+    const sources = audioSourcesOf([
+      event({
+        event_name: 'recording.started',
+        event_data_recording_contract: 'v1',
+        event_data_source: 'browser',
+        event_data_env: 'e',
+        event_data_agent_id: '7',
+        event_data_clock_offset_ms: '3000',
+      }),
+    ]);
+    // The recorder's clock is 3 s ahead of the PC's.
+    const tracks = {
+      mic: [seg('mic', 10_000, 1000)],
+      heard: [],
+      agent: [seg('agent', 13_000, 1000, [[13_200, 13_400]])],
+      customer: [seg('customer', 13_000, 1000)],
+    };
+
+    const shifted = onSessionClock(tracks, sources.clockOffsetMs);
+
+    expect(shifted.mic[0].startMs).toBe(10_000);
+    expect(shifted.agent[0]).toMatchObject({ startMs: 10_000, gaps: [{ startMs: 10_200, endMs: 10_400 }] });
+    expect(shifted.customer[0].startMs).toBe(10_000);
   });
 });
