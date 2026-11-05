@@ -1,5 +1,6 @@
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { parseLogfmt } from './logfmt';
+import { mergeSorted } from './sorted';
 
 export const REPLAY_EVENT_NAME = 'faro.session_recording.event';
 
@@ -90,11 +91,7 @@ export function mergeReplayEvents(
   }
 
   const recordings = [...byRecording.values()]
-    .map((entries) =>
-      entries
-        .sort((a, b) => a.event.timestamp - b.event.timestamp || a.gen - b.gen || a.seq - b.seq)
-        .map((entry) => entry.event)
-    )
+    .map((entries) => entries.sort(inRecordingOrder).map((entry) => entry.event))
     .sort((a, b) => a[0].timestamp - b[0].timestamp);
 
   const tracks: eventWithTime[][] = [];
@@ -109,6 +106,60 @@ export function mergeReplayEvents(
   }
 
   return tracks.map(playableEvents).filter((track) => track.length > 0);
+}
+
+const inRecordingOrder = (a: DecodedReplayEvent, b: DecodedReplayEvent) =>
+  a.event.timestamp - b.event.timestamp || a.gen - b.gen || a.seq - b.seq;
+
+/**
+ * mergeReplayEvents, page by page: each recording's events stay sorted and a
+ * new page is merged in (O(n + k)) rather than everything being sorted again.
+ * Gives exactly what mergeReplayEvents gives for the same events.
+ */
+export class ReplayRecordings {
+  private readonly keys = new Set<string>();
+  private readonly recordings = new Map<string, DecodedReplayEvent[]>();
+
+  /** True when an event of this key is loaded already. */
+  has(key: string): boolean {
+    return this.keys.has(key);
+  }
+
+  add(incoming: DecodedReplayEvent[]): eventWithTime[][] {
+    const fresh = new Map<string, DecodedReplayEvent[]>();
+    for (const entry of incoming) {
+      if (this.keys.has(entry.key)) {
+        continue;
+      }
+      this.keys.add(entry.key);
+      const list = fresh.get(entry.recordingId) ?? [];
+      list.push(entry);
+      fresh.set(entry.recordingId, list);
+    }
+    for (const [recordingId, entries] of fresh) {
+      entries.sort(inRecordingOrder);
+      this.recordings.set(recordingId, mergeSorted(this.recordings.get(recordingId) ?? [], entries, inRecordingOrder));
+    }
+    return this.tracks();
+  }
+
+  private tracks(): eventWithTime[][] {
+    const recordings = [...this.recordings.values()]
+      .map((entries) => entries.map((entry) => entry.event))
+      .sort((a, b) => a[0].timestamp - b[0].timestamp);
+
+    const tracks: eventWithTime[][] = [];
+    for (const recording of recordings) {
+      const start = recording[0].timestamp;
+      const track = tracks.find((candidate) => candidate[candidate.length - 1].timestamp <= start);
+      if (track) {
+        track.push(...recording);
+      } else {
+        tracks.push(recording);
+      }
+    }
+    return tracks.map(playableEvents).filter((track) => track.length > 0);
+  }
 }
 
 /**

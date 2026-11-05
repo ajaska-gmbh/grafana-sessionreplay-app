@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { css, cx } from '@emotion/css';
 import { GrafanaTheme2 } from '@grafana/data';
 import {
@@ -13,6 +14,10 @@ import {
 } from '@grafana/ui';
 import { formatOffset, traceExploreUrl } from '../../lib/format';
 import type { JourneyCategory, JourneyEvent } from '../../lib/journey';
+import { PlayerClock, useClockValue } from '../../lib/playerClock';
+
+/** Stands in when the journey is shown without a player. */
+const STATIC_CLOCK = new PlayerClock();
 import { testIds } from '../testIds';
 
 type JourneyTab = 'journey' | 'network';
@@ -28,29 +33,56 @@ export interface UserJourneyProps {
   events: JourneyEvent[];
   /** Epoch ms of the recording start; offsets are relative to it. */
   recordingStartMs?: number;
-  /** Current player position (epoch ms) for "Follow playback". */
-  playheadMs?: number;
+  /** The player's time, for "Follow playback"; the list re-renders only when the current event changes. */
+  clock?: PlayerClock;
   loading?: boolean;
   tempoUid: string;
   onJump: (event: JourneyEvent) => void;
 }
 
-/** Index of the last event at or before the playhead. */
+/**
+ * Every row is this tall (title and one detail line); only the row whose
+ * details are open is measured. Measuring every row re-renders the list once
+ * per row as it mounts, which on long lists exceeds React's update limit.
+ */
+const ROW_PX = 44;
+/** Rows rendered beyond the visible ones, so scrolling shows no blank rows. */
+const OVERSCAN = 12;
+/** The list's size until the browser has measured it: its first paint shows rows. */
+const INITIAL_LIST_RECT = { width: 400, height: 600 };
+
+/** Index of the last event at or before the playhead (events sorted by time), by binary search. */
 export function currentEventIndex(events: JourneyEvent[], playheadMs: number | undefined): number {
   if (playheadMs === undefined) {
     return -1;
   }
-  let index = -1;
-  for (let i = 0; i < events.length; i++) {
-    if (events[i].timeMs > playheadMs) {
-      break;
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (events[middle].timeMs <= playheadMs) {
+      low = middle + 1;
+    } else {
+      high = middle;
     }
-    index = i;
   }
-  return index;
+  return low - 1;
 }
 
-export function UserJourney({ events, recordingStartMs, playheadMs, loading, tempoUid, onJump }: UserJourneyProps) {
+const NO_CLOCK_INDEX = () => -1;
+
+/**
+ * The session's events beside the player. Only the rows in view are rendered,
+ * so a session of many thousand events scrolls and plays as smoothly as a short one.
+ */
+export const UserJourney = memo(function UserJourney({
+  events,
+  recordingStartMs,
+  clock,
+  loading,
+  tempoUid,
+  onJump,
+}: UserJourneyProps) {
   const styles = useStyles2(getStyles);
   const [tab, setTab] = useState<JourneyTab>('journey');
   const [filters, setFilters] = useState<Set<JourneyFilter>>(new Set());
@@ -70,15 +102,55 @@ export function UserJourney({ events, recordingStartMs, playheadMs, loading, tem
       : journeyEvents.filter((event) => filters.has(event.category as JourneyFilter));
   }, [tab, filters, journeyEvents, networkEvents]);
 
-  const current = currentEventIndex(visible, playheadMs);
+  const selectCurrent = useCallback(
+    (state: { offsetMs: number; startTimeMs?: number }) =>
+      currentEventIndex(visible, state.startTimeMs === undefined ? undefined : state.startTimeMs + state.offsetMs),
+    [visible]
+  );
+  const current = useClockValueOrNot(clock, selectCurrent);
 
-  useEffect(() => {
-    if (!follow || current < 0) {
+  const getScrollElement = useCallback(() => listRef.current, []);
+  // The open row's height, measured whenever its content changes size.
+  const [openHeight, setOpenHeight] = useState(ROW_PX);
+  const openObserver = useRef<ResizeObserver | null>(null);
+  const measureOpenRow = useCallback((node: HTMLDivElement | null) => {
+    openObserver.current?.disconnect();
+    openObserver.current = null;
+    if (!node) {
       return;
     }
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-index="${current}"]`);
-    row?.scrollIntoView({ block: 'nearest' });
-  }, [follow, current]);
+    const read = () => setOpenHeight(Math.max(ROW_PX, Math.ceil(node.getBoundingClientRect().height)));
+    read();
+    if (typeof ResizeObserver !== 'undefined') {
+      openObserver.current = new ResizeObserver(read);
+      openObserver.current.observe(node);
+    }
+  }, []);
+  useEffect(() => () => openObserver.current?.disconnect(), []);
+  const estimateSize = useCallback(
+    (index: number) => (visible[index].id === expanded ? openHeight : ROW_PX),
+    [visible, expanded, openHeight]
+  );
+  const getItemKey = useCallback((index: number) => visible[index].id, [visible]);
+  const virtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement,
+    estimateSize,
+    overscan: OVERSCAN,
+    initialRect: INITIAL_LIST_RECT,
+    getItemKey,
+  });
+
+  // Row heights changed (a row opened, closed or grew): lay the list out again.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, estimateSize]);
+
+  useEffect(() => {
+    if (follow && current >= 0) {
+      virtualizer.scrollToIndex(current, { align: 'auto' });
+    }
+  }, [follow, current, virtualizer]);
 
   const toggleFilter = (value: JourneyFilter) => {
     setFilters((previous) => {
@@ -138,73 +210,89 @@ export function UserJourney({ events, recordingStartMs, playheadMs, loading, tem
       <div ref={listRef} className={styles.list}>
         {loading && visible.length === 0 && <LoadingPlaceholder text="Loading events…" />}
         {!loading && visible.length === 0 && <div className={styles.empty}>No events.</div>}
-        {visible.map((event, index) => {
-          const offset = recordingStartMs !== undefined ? event.timeMs - recordingStartMs : undefined;
-          const isOpen = expanded === event.id;
-          return (
-            <div
-              key={event.id}
-              data-index={index}
-              className={cx(
-                styles.row,
-                index === current && styles.current,
-                index > current && current >= 0 && styles.future
-              )}
-              data-testid={testIds.journey.row}
-            >
-              <div className={styles.rowMain}>
-                <span className={styles.offset}>{offset !== undefined ? formatOffset(offset) : ''}</span>
-                <CategoryBadge category={event.category} />
-                <div className={styles.text}>
-                  <div className={styles.eventTitle} title={event.title}>
-                    {event.title}
+        {visible.length > 0 && (
+          <div className={styles.rows} style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const event = visible[item.index];
+              const index = item.index;
+              const offset = recordingStartMs !== undefined ? event.timeMs - recordingStartMs : undefined;
+              const isOpen = expanded === event.id;
+              return (
+                <div
+                  key={item.key}
+                  ref={isOpen ? measureOpenRow : undefined}
+                  data-index={index}
+                  className={cx(
+                    styles.row,
+                    index === current && styles.current,
+                    index > current && current >= 0 && styles.future
+                  )}
+                  style={{ transform: `translateY(${item.start}px)`, height: isOpen ? undefined : ROW_PX }}
+                  data-testid={testIds.journey.row}
+                >
+                  <div className={styles.rowMain}>
+                    <span className={styles.offset}>{offset !== undefined ? formatOffset(offset) : ''}</span>
+                    <CategoryBadge category={event.category} />
+                    <div className={styles.text}>
+                      <div className={styles.eventTitle} title={event.title}>
+                        {event.title}
+                      </div>
+                      {event.detail && (
+                        <div className={styles.detail} title={event.detail}>
+                          {event.detail}
+                        </div>
+                      )}
+                    </div>
+                    <IconButton name="play" tooltip="Jump to this event" onClick={() => onJump(event)} />
+                    <IconButton
+                      name={isOpen ? 'angle-up' : 'info-circle'}
+                      tooltip="View event details"
+                      onClick={() => setExpanded(isOpen ? null : event.id)}
+                    />
                   </div>
-                  {event.detail && (
-                    <div className={styles.detail} title={event.detail}>
-                      {event.detail}
+                  {isOpen && (
+                    <div className={styles.attributes}>
+                      {event.traceId && (
+                        <LinkButton
+                          size="sm"
+                          variant="secondary"
+                          icon="external-link-alt"
+                          href={traceExploreUrl(tempoUid, event.traceId, event.timeMs)}
+                          target="_blank"
+                        >
+                          Open trace {event.traceId.slice(0, 8)}…
+                        </LinkButton>
+                      )}
+                      <table>
+                        <tbody>
+                          {Object.entries(event.attributes)
+                            .filter(([key]) => !key.startsWith('browser_userAgent'))
+                            .map(([key, value]) => (
+                              <tr key={key}>
+                                <td className={styles.attrKey}>{key}</td>
+                                <td className={styles.attrValue}>{value}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </div>
-                <IconButton name="play" tooltip="Jump to this event" onClick={() => onJump(event)} />
-                <IconButton
-                  name={isOpen ? 'angle-up' : 'info-circle'}
-                  tooltip="View event details"
-                  onClick={() => setExpanded(isOpen ? null : event.id)}
-                />
-              </div>
-              {isOpen && (
-                <div className={styles.attributes}>
-                  {event.traceId && (
-                    <LinkButton
-                      size="sm"
-                      variant="secondary"
-                      icon="external-link-alt"
-                      href={traceExploreUrl(tempoUid, event.traceId, event.timeMs)}
-                      target="_blank"
-                    >
-                      Open trace {event.traceId.slice(0, 8)}…
-                    </LinkButton>
-                  )}
-                  <table>
-                    <tbody>
-                      {Object.entries(event.attributes)
-                        .filter(([key]) => !key.startsWith('browser_userAgent'))
-                        .map(([key, value]) => (
-                          <tr key={key}>
-                            <td className={styles.attrKey}>{key}</td>
-                            <td className={styles.attrValue}>{value}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
+});
+
+/** The current event's index from the clock, or none without a clock. */
+function useClockValueOrNot(
+  clock: PlayerClock | undefined,
+  select: (state: { offsetMs: number; startTimeMs?: number }) => number
+) {
+  return useClockValue(clock ?? STATIC_CLOCK, clock ? select : NO_CLOCK_INDEX);
 }
 
 function CategoryBadge({ category }: { category: JourneyCategory }) {
@@ -240,7 +328,14 @@ const getStyles = (theme: GrafanaTheme2) => ({
   filters: css({ display: 'flex', gap: theme.spacing(0.5), padding: theme.spacing(1, 2, 0) }),
   list: css({ flex: 1, overflowY: 'auto', padding: theme.spacing(1, 0), minHeight: 0 }),
   empty: css({ padding: theme.spacing(2), color: theme.colors.text.secondary }),
+  rows: css({ position: 'relative', width: '100%' }),
   row: css({
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    boxSizing: 'border-box',
+    overflow: 'hidden',
     padding: theme.spacing(0.5, 2),
     borderLeft: `3px solid transparent`,
     '&:hover': { background: theme.colors.action.hover },

@@ -1,7 +1,8 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { PlayerClock } from '../../lib/playerClock';
 import type { AudioLevelSegment } from '../../lib/audioLevels';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline, channelPaths, COLUMNS, describeSegment } from './AudioLevelTimeline';
@@ -149,7 +150,14 @@ describe('AudioLevelTimeline', () => {
 
   it('shows the agent and the customer on separate rows, and jumps where clicked', () => {
     const onSeek = jest.fn();
-    render(<AudioLevelTimeline segments={[segment(0), segment(5000)]} totalMs={10_000} offsetMs={0} onSeek={onSeek} />);
+    render(
+      <AudioLevelTimeline
+        segments={[segment(0), segment(5000)]}
+        totalMs={10_000}
+        clock={new PlayerClock()}
+        onSeek={onSeek}
+      />
+    );
 
     const agent = screen.getByTestId(testIds.player.audioAgent);
     expect(screen.getByTestId(testIds.player.audioCustomer)).toBeInTheDocument();
@@ -159,14 +167,13 @@ describe('AudioLevelTimeline', () => {
     expect(onSeek).toHaveBeenCalledWith(5000);
   });
 
-  it('moves the playhead as an overlay, without redrawing the rows', () => {
+  it('moves the playhead as an overlay with the clock, without redrawing the rows', () => {
     const segments = [segment(0), segment(5000)];
-    const { rerender } = render(
-      <AudioLevelTimeline segments={segments} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />
-    );
+    const clock = new PlayerClock();
+    render(<AudioLevelTimeline segments={segments} totalMs={10_000} clock={clock} onSeek={jest.fn()} />);
     const agentPath = screen.getByTestId(testIds.player.audioAgent).querySelector('path:nth-of-type(3)');
 
-    rerender(<AudioLevelTimeline segments={segments} totalMs={10_000} offsetMs={2500} onSeek={jest.fn()} />);
+    act(() => clock.update({ offsetMs: 2500 }));
 
     expect(screen.getByTestId(testIds.player.audioPlayhead)).toHaveStyle({ left: '25%' });
     expect(screen.getByTestId(testIds.player.audioAgent).querySelector('line')).toBeNull();
@@ -175,7 +182,9 @@ describe('AudioLevelTimeline', () => {
   });
 
   it('reads out the window under the pointer', () => {
-    render(<AudioLevelTimeline segments={[segment(5000)]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />);
+    render(
+      <AudioLevelTimeline segments={[segment(5000)]} totalMs={10_000} clock={new PlayerClock()} onSeek={jest.fn()} />
+    );
     const agent = screen.getByTestId(testIds.player.audioAgent);
     svgBox(agent);
 
@@ -189,7 +198,7 @@ describe('AudioLevelTimeline', () => {
       <AudioLevelTimeline
         segments={[segment(0, { phase: 'waiting' }), segment(1000, { phase: 'idle' })]}
         totalMs={10_000}
-        offsetMs={0}
+        clock={new PlayerClock()}
         onSeek={jest.fn()}
       />
     );
@@ -200,7 +209,9 @@ describe('AudioLevelTimeline', () => {
   });
 
   it('names each row in its own header', () => {
-    render(<AudioLevelTimeline segments={[segment(0)]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />);
+    render(
+      <AudioLevelTimeline segments={[segment(0)]} totalMs={10_000} clock={new PlayerClock()} onSeek={jest.fn()} />
+    );
 
     expect(screen.getByText('Agent mic')).toBeInTheDocument();
     expect(screen.getByText('Customer')).toBeInTheDocument();
@@ -214,7 +225,7 @@ describe('AudioLevelTimeline', () => {
       <AudioLevelTimeline
         segments={[segment(5000)]}
         totalMs={10_000}
-        offsetMs={0}
+        clock={new PlayerClock()}
         startTimeMs={startTimeMs}
         onSeek={jest.fn()}
       />
@@ -229,12 +240,17 @@ describe('AudioLevelTimeline', () => {
 
   it('has no customer row between calls only, and nothing at all without levels', () => {
     const { rerender } = render(
-      <AudioLevelTimeline segments={[segment(0, { phase: 'idle' })]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />
+      <AudioLevelTimeline
+        segments={[segment(0, { phase: 'idle' })]}
+        totalMs={10_000}
+        clock={new PlayerClock()}
+        onSeek={jest.fn()}
+      />
     );
     expect(screen.getByTestId(testIds.player.audioAgent)).toBeInTheDocument();
     expect(screen.queryByTestId(testIds.player.audioCustomer)).toBeNull();
 
-    rerender(<AudioLevelTimeline segments={[]} totalMs={10_000} offsetMs={0} onSeek={jest.fn()} />);
+    rerender(<AudioLevelTimeline segments={[]} totalMs={10_000} clock={new PlayerClock()} onSeek={jest.fn()} />);
     expect(screen.queryByTestId(testIds.player.audioLevels)).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import { useSessionData } from '../../hooks/useSessionData';
 import { formatClock, replayUrl } from '../../lib/format';
 import { linkOffset } from '../../lib/playerEvents';
 import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
+import { PlayerClock } from '../../lib/playerClock';
 import type { JourneyEvent } from '../../lib/journey';
 import { UserJourney } from '../Journey/UserJourney';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
@@ -63,7 +64,8 @@ export function SessionReplay(props: SessionReplayProps) {
   const sinceLastEventMs = data.lastReplayMs !== undefined ? now - data.lastReplayMs : undefined;
   const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;
   const [seekRequest, setSeekRequest] = useState<SeekRequest>();
-  const [playheadMs, setPlayheadMs] = useState<number>();
+  // The player's time, shared with the journey without re-rendering this view every frame.
+  const [clock] = useState(() => new PlayerClock());
   const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
 
   const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
@@ -94,10 +96,6 @@ export function SessionReplay(props: SessionReplayProps) {
     },
     [recordingStartMs]
   );
-
-  const onTimeChange = useCallback((offsetMs: number, startTimeMs: number) => {
-    setPlayheadMs(startTimeMs + offsetMs);
-  }, []);
 
   const onShare = useCallback(
     async (offsetMs: number) => {
@@ -143,7 +141,7 @@ export function SessionReplay(props: SessionReplayProps) {
               value={track}
               onChange={(value) => {
                 setSelectedTrack(value);
-                setPlayheadMs(undefined);
+                clock.update({ offsetMs: 0, totalMs: 0, startTimeMs: undefined });
               }}
             />
           </div>
@@ -176,7 +174,7 @@ export function SessionReplay(props: SessionReplayProps) {
             seekRequest={seekRequest}
             markers={markers}
             audioLevels={data.audioLevels}
-            onTimeChange={onTimeChange}
+            clock={clock}
             onShare={onShare}
             live={live}
             liveReceivedAtMs={data.lastReplayMs}
@@ -206,7 +204,7 @@ export function SessionReplay(props: SessionReplayProps) {
         <UserJourney
           events={data.journey}
           recordingStartMs={recordingStartMs}
-          playheadMs={playheadMs}
+          clock={clock}
           loading={data.loadingJourney}
           tempoUid={tempoUid}
           onJump={onJump}

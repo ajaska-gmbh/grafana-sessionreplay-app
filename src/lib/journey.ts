@@ -172,6 +172,8 @@ export function toJourneyEvent(tsNs: string, line: string, sessionId: string): J
   }
 }
 
+export const byTime = (a: JourneyEvent, b: JourneyEvent) => a.timeMs - b.timeMs;
+
 /** Sort by time and drop duplicates (overlapping pages / retried sends). */
 export function buildJourney(entries: Iterable<{ tsNs: string; line: string }>, sessionId: string): JourneyEvent[] {
   const byId = new Map<string, JourneyEvent>();
@@ -181,5 +183,5 @@ export function buildJourney(entries: Iterable<{ tsNs: string; line: string }>, 
       byId.set(event.id, event);
     }
   }
-  return [...byId.values()].sort((a, b) => a.timeMs - b.timeMs);
+  return [...byId.values()].sort(byTime);
 }

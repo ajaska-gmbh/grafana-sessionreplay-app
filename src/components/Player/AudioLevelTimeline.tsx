@@ -1,16 +1,18 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { css } from '@emotion/css';
 import { GrafanaTheme2 } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { AUDIO_SILENCE_THRESHOLD, readingAt, segmentAt, type AudioLevelSegment } from '../../lib/audioLevels';
 import { formatClock, formatWallClock } from '../../lib/format';
+import { type PlayerClock, useClockEffect } from '../../lib/playerClock';
 import { testIds } from '../testIds';
 
 export interface AudioLevelTimelineProps {
   /** Windows as timeline offsets (toTimelineSegments), sorted. */
   segments: AudioLevelSegment[];
   totalMs: number;
-  offsetMs: number;
+  /** The player's time; the playhead follows it without re-rendering the graph. */
+  clock: PlayerClock;
   /** Epoch ms of the recording's start, for the wall-clock time in the readout. */
   startTimeMs?: number;
   onSeek: (offsetMs: number) => void;
@@ -264,10 +266,16 @@ const Row = React.memo(function Row({ label, hint, paths, color, colors, testId,
  * and, while a customer is on the line, the customer's audio as the agent
  * hears it, each in its own band on the timeline's time axis. Click to jump.
  */
-export function AudioLevelTimeline({ segments, totalMs, offsetMs, startTimeMs, onSeek }: AudioLevelTimelineProps) {
+export function AudioLevelTimeline({ segments, totalMs, clock, startTimeMs, onSeek }: AudioLevelTimelineProps) {
   const styles = useStyles2(getStyles);
   const theme = useTheme2();
   const [hoverMs, setHoverMs] = useState<number>();
+  const playheadRef = useRef<HTMLDivElement>(null);
+  useClockEffect(clock, (state) => {
+    if (playheadRef.current && totalMs > 0) {
+      playheadRef.current.style.left = `${(Math.min(totalMs, Math.max(0, state.offsetMs)) / totalMs) * 100}%`;
+    }
+  });
   const agent = useMemo(() => channelPaths(segments, 'agent', totalMs), [segments, totalMs]);
   const customer = useMemo(() => channelPaths(segments, 'customer', totalMs), [segments, totalMs]);
   const hasCustomer = useMemo(() => segments.some((segment) => segment.phase === 'call'), [segments]);
@@ -288,7 +296,6 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, startTimeMs, o
   }
 
   const hovered = hoverMs === undefined ? undefined : segmentAt(segments, hoverMs);
-  const playheadPercent = (Math.min(totalMs, Math.max(0, offsetMs)) / totalMs) * 100;
   const hoverTime = (ms: number) =>
     startTimeMs === undefined ? formatClock(ms) : `${formatWallClock(startTimeMs + ms)} (${formatClock(ms)})`;
   const swatch = (color: string, opacity = 1) => (
@@ -324,8 +331,9 @@ export function AudioLevelTimeline({ segments, totalMs, offsetMs, startTimeMs, o
         )}
         {/* An HTML overlay, so moving it repaints a line, not the graph. */}
         <div
+          ref={playheadRef}
           className={styles.playhead}
-          style={{ left: `${playheadPercent}%` }}
+          style={{ left: `${(Math.min(totalMs, Math.max(0, clock.get().offsetMs)) / totalMs) * 100}%` }}
           data-testid={testIds.player.audioPlayhead}
         />
       </div>
