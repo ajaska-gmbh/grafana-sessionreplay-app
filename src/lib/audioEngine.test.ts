@@ -52,18 +52,17 @@ const seg = (track: CallAudioTrack, startMs: number, durationMs = 10_000): Audio
   track,
   startMs,
   durationMs,
-  gaps: [],
 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function engineWith(
   segments: Partial<Record<CallAudioTrack, AudioSegment[]>>,
-  audible: CallAudioTrack[] = ['mic', 'customer']
+  audible: CallAudioTrack[] = ['mic', 'heard']
 ) {
   const fake = fakeContext();
   const fetchAudio = jest.fn(async (key: string) => new TextEncoder().encode(key).buffer as ArrayBuffer);
   const engine = new CallAudioEngine({ fetchAudio, createContext: () => fake.context });
-  engine.setSegments({ mic: [], heard: [], agent: [], customer: [], ...segments });
+  engine.setSegments({ mic: [], heard: [], ...segments });
   engine.setAudible(new Set(audible));
   return { engine, fetchAudio, ...fake };
 }
@@ -83,8 +82,7 @@ describe('call audio engine', () => {
   it("plays each audible track from the playhead's place in its segment", async () => {
     const { engine, sources } = engineWith({
       mic: [seg('mic', 1_000_000)],
-      customer: [seg('customer', 1_000_000)],
-      agent: [seg('agent', 1_000_000)],
+      heard: [seg('heard', 1_000_000)],
     });
 
     engine.sync(clock({ offsetMs: 2500 }));
@@ -92,7 +90,7 @@ describe('call audio engine', () => {
 
     expect(live(sources).map((s) => [s.buffer?.key, s.started?.offset])).toEqual([
       ['mic@1000000', 2.5],
-      ['customer@1000000', 2.5],
+      ['heard@1000000', 2.5],
     ]);
   });
 

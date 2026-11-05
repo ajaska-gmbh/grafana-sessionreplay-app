@@ -14,7 +14,7 @@ const CONTIGUOUS_MS = 60;
 /** Decoding rate: the recordings are speech at 8–16 kHz. */
 export const CONTEXT_SAMPLE_RATE = 16_000;
 
-const STEREO_PAN: Record<CallAudioTrack, number> = { mic: -0.7, agent: -0.7, customer: 0.7, heard: 0.7 };
+const STEREO_PAN: Record<CallAudioTrack, number> = { mic: -0.7, heard: 0.7 };
 
 /** The slice of Web Audio the engine uses, so tests can stand in for it. */
 export interface EngineContext {
@@ -69,7 +69,7 @@ export class CallAudioEngine {
   /** Fetch-and-decode in progress or done, by segment key; `ready` holds the finished ones. */
   private readonly decoded = new Map<string, Promise<AudioBuffer | null>>();
   private readonly ready = new Map<string, AudioBuffer>();
-  private segments: Record<CallAudioTrack, AudioSegment[]> = { mic: [], heard: [], agent: [], customer: [] };
+  private segments: Record<CallAudioTrack, AudioSegment[]> = { mic: [], heard: [] };
   private audible: ReadonlySet<CallAudioTrack> = new Set();
   private volume = 1;
   private stereo = false;

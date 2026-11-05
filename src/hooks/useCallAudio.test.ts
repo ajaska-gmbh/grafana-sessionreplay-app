@@ -31,7 +31,7 @@ describe('useCallAudio', () => {
       .mockReset()
       .mockResolvedValue({
         ...noSegments(),
-        mic: [{ key: 'k', track: 'mic', startMs: 0, durationMs: 10_000, gaps: [] }],
+        mic: [{ key: 'k', track: 'mic', startMs: 0, durationMs: 10_000 }],
       })
   );
 
@@ -42,11 +42,7 @@ describe('useCallAudio', () => {
 
     await waitFor(() => expect(result.current.segments.mic).toHaveLength(1));
     expect(result.current.available).toBe(true);
-    expect(listSessionAudio).toHaveBeenCalledWith(
-      { browser: { env: 'ppdtesting-', agentId: 7 }, clockOffsetMs: 0, legSids: [] },
-      0,
-      60_000
-    );
+    expect(listSessionAudio).toHaveBeenCalledWith({ browser: { env: 'ppdtesting-', agentId: 7 } }, 0, 60_000);
   });
 
   it('asks the recorder nothing for a session of another app, or without the recorder configured', () => {
@@ -66,10 +62,18 @@ describe('useCallAudio', () => {
     const { result } = renderHook(() =>
       useCallAudio({ journey: [started], range: { from: 0, to: 60_000 }, clock: new PlayerClock(), enabled: true })
     );
-    expect([...result.current.audible].sort()).toEqual(['customer', 'mic']);
+    expect([...result.current.audible].sort()).toEqual(['heard', 'mic']);
 
     result.current.toggle('mic');
 
-    await waitFor(() => expect([...result.current.audible]).toEqual(['customer']));
+    await waitFor(() => expect([...result.current.audible]).toEqual(['heard']));
+  });
+
+  it("marks where the agent's microphone was not recorded within the session", async () => {
+    const { result } = renderHook(() =>
+      useCallAudio({ journey: [started], range: { from: 0, to: 60_000 }, clock: new PlayerClock(), enabled: true })
+    );
+
+    await waitFor(() => expect(result.current.micMissing).toEqual([{ startMs: 10_000, endMs: 60_000 }]));
   });
 });

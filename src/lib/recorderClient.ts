@@ -19,7 +19,6 @@ interface ListedSegment {
   track: string;
   start_ms: number;
   duration_ms: number;
-  gaps?: Array<{ start_ms: number; end_ms: number }>;
 }
 
 async function list(path: string, params: Record<string, string | number>): Promise<AudioSegment[]> {
@@ -36,7 +35,6 @@ async function list(path: string, params: Record<string, string | number>): Prom
         track,
         startMs: s.start_ms,
         durationMs: s.duration_ms,
-        gaps: (s.gaps ?? []).map((gap) => ({ startMs: gap.start_ms, endMs: gap.end_ms })),
       });
     }
   }
@@ -46,7 +44,7 @@ async function list(path: string, params: Record<string, string | number>): Prom
 export type CallAudioSegments = Record<CallAudioTrack, AudioSegment[]>;
 
 export function noSegments(): CallAudioSegments {
-  return { mic: [], heard: [], agent: [], customer: [] };
+  return { mic: [], heard: [] };
 }
 
 /** Every segment of the session's audio between fromMs and toMs, by track, sorted. */
@@ -61,9 +59,6 @@ export async function listSessionAudio(
     const to = Math.min(toMs, from + MAX_LIST_MS);
     if (sources.browser) {
       lists.push(list('browser/segments', { env: sources.browser.env, agent_id: sources.browser.agentId, from, to }));
-    }
-    for (const leg of sources.legSids) {
-      lists.push(list('carrier/segments', { leg_sid: leg, from, to }));
     }
   }
   const seen = new Set<string>();

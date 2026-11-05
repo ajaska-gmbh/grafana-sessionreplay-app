@@ -20,32 +20,22 @@ interface RowSpec {
   track: CallAudioTrack;
   label: string;
   hint: string;
-  /** The losses this row marks. */
-  lost?: 'uplink' | 'downlink';
 }
 
 const ROWS: RowSpec[] = [
-  { track: 'mic', label: 'Agent mic', hint: "the agent's microphone, recorded on their computer (also between calls)" },
-  { track: 'customer', label: 'Customer', hint: 'what the carrier sent the agent' },
   {
-    track: 'agent',
-    label: 'Agent at carrier',
-    hint: "the agent as the carrier received them; red where their words did not arrive (the agent's uplink)",
-    lost: 'uplink',
+    track: 'mic',
+    label: 'Agent mic',
+    hint: "the agent's microphone, recorded on their computer (also between calls); grey where it was not recorded",
   },
-  {
-    track: 'heard',
-    label: 'Heard by agent',
-    hint: "what the agent's computer played; red where the customer did not reach it (the agent's downlink)",
-    lost: 'downlink',
-  },
+  { track: 'heard', label: 'Heard by agent', hint: "what the agent's computer played on a call: the customer" },
 ];
 
 /**
  * The call audio under the replay's timeline, on its axis: what each track
- * has, where the carrier sent nothing, and where audio was lost on the way
- * between the agent's computer and the carrier. Click to jump, the speaker to
- * listen to a track or not.
+ * has, where the agent's microphone was not recorded, and where the agent's
+ * browser had no network. Click to jump, the checkbox to listen to a track or
+ * not.
  */
 export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelineProps) {
   const styles = useStyles2(getStyles);
@@ -63,14 +53,6 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
   const covered = useMemo(
     () =>
       Object.fromEntries(ROWS.map((row) => [row.track, coverage(audio.segments[row.track])])) as Record<
-        CallAudioTrack,
-        Interval[]
-      >,
-    [audio.segments]
-  );
-  const gaps = useMemo(
-    () =>
-      Object.fromEntries(ROWS.map((row) => [row.track, audio.segments[row.track].flatMap((s) => s.gaps)])) as Record<
         CallAudioTrack,
         Interval[]
       >,
@@ -109,8 +91,6 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
   };
   const color: Record<CallAudioTrack, string> = {
     mic: theme.visualization.getColorByName('blue'),
-    agent: theme.visualization.getColorByName('blue'),
-    customer: theme.visualization.getColorByName('orange'),
     heard: theme.visualization.getColorByName('orange'),
   };
   const tooFast = speed > MAX_AUDIBLE_SPEED;
@@ -136,13 +116,9 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
                 {bars(covered[row.track], styles.bar, {
                   style: { background: color[row.track], opacity: on ? 0.8 : 0.35 },
                 })}
-                {bars(gaps[row.track], cx(styles.bar, styles.gap), {
-                  title: (i) => `The carrier sent nothing ${span(i)}`,
-                })}
-                {row.lost &&
-                  bars(audio.losses[row.lost], cx(styles.bar, styles.lost), {
-                    title: (i) =>
-                      `${row.lost === 'uplink' ? "The agent's words did not reach the carrier" : "The customer did not reach the agent's computer"} ${span(i)}`,
+                {row.track === 'mic' &&
+                  bars(audio.micMissing, cx(styles.bar, styles.gap), {
+                    title: (i) => `The agent's microphone was not recorded ${span(i)}`,
                   })}
                 {bars(audio.connectionLost, cx(styles.bar, styles.offline), {
                   title: (i) => `The agent's browser had no network ${span(i)}`,
@@ -155,9 +131,8 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
       </div>
       <div className={styles.footer}>
         <span className={styles.legend}>
-          <span className={styles.swatch} style={{ background: theme.colors.error.main }} /> lost on the way{' '}
           <span className={cx(styles.swatch, styles.offlineSwatch)} /> no network in the browser{' '}
-          <span className={cx(styles.swatch, styles.gapSwatch)} /> carrier sent nothing
+          <span className={cx(styles.swatch, styles.gapSwatch)} /> microphone not recorded
           {tooFast && <> · muted above {MAX_AUDIBLE_SPEED}x</>}
           {audio.error && <> · {audio.error}</>}
         </span>
@@ -179,7 +154,7 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
             checked={audio.stereo}
             onChange={(event) => audio.setStereo(event.currentTarget.checked)}
           />
-          Agent left, customer right
+          Mic left, heard right
         </label>
       </div>
     </div>
@@ -210,7 +185,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
   bar: css({ position: 'absolute', top: 0, bottom: 0 }),
   gap: css({ background: theme.colors.text.disabled }),
-  lost: css({ background: theme.colors.error.main }),
   offline: css({
     background: `repeating-linear-gradient(45deg, ${theme.colors.error.transparent}, ${theme.colors.error.transparent} 3px, transparent 3px, transparent 6px)`,
   }),

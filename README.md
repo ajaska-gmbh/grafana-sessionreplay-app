@@ -121,17 +121,15 @@ read token (kept encrypted). The `recorder` plugin route (GET only, Editor)
 adds the token on Grafana's side. A session plays the audio its own
 `recording` v1 events point to:
 
-| Row              | What it is                                                      |
-| ---------------- | --------------------------------------------------------------- |
-| Agent mic        | the agent's microphone, recorded on their computer, whole shift |
-| Customer         | what the carrier sent the agent                                 |
-| Agent at carrier | the agent as the carrier received them                          |
-| Heard by agent   | what the agent's computer played                                |
+| Row            | What it is                                                                          |
+| -------------- | ----------------------------------------------------------------------------------- |
+| Agent mic      | the agent's microphone, recorded on their computer, whole shift (between calls too) |
+| Heard by agent | what the agent's computer played on a call: the customer                            |
 
-Agent mic and Customer play by default: the conversation. Red marks audio lost
-on the way (the agent's words missing at the carrier: their uplink; the
-customer missing on their computer: their downlink); hatched, where the agent's
-browser had no network; grey, where the carrier sent nothing. The audio follows
+Both are recorded on the agent's computer, from the agent's point of view, and
+both play by default: the conversation as the agent had it. Grey marks where
+the agent's microphone was not recorded; hatched, where the agent's browser had
+no network. The audio follows
 the replay's clock (play, pause, seek, skipped inactivity, 0.5–2x; muted
 faster). Sessions without recording events, as every other app's, request
 nothing from the recorder. Self-hosted Grafana only: the recorder is

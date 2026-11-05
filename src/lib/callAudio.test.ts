@@ -2,9 +2,7 @@ import type { JourneyEvent } from './journey';
 import {
   audioSourcesOf,
   coverage,
-  intersect,
-  losses,
-  onSessionClock,
+  missing,
   segmentAt,
   subtract,
   trackOf,
@@ -20,17 +18,11 @@ const event = (attributes: Record<string, string>): JourneyEvent => ({
   title: '',
   attributes,
 });
-const seg = (
-  track: CallAudioTrack,
-  startMs: number,
-  durationMs: number,
-  gaps: Array<[number, number]> = []
-): AudioSegment => ({
+const seg = (track: CallAudioTrack, startMs: number, durationMs: number): AudioSegment => ({
   key: `${track}-${startMs}`,
   track,
   startMs,
   durationMs,
-  gaps: gaps.map(([startMs, endMs]) => ({ startMs, endMs })),
 });
 
 describe('call audio', () => {
@@ -45,19 +37,13 @@ describe('call audio', () => {
       }),
       event({ event_name: 'recording.source-changed', event_data_origin: 'idle' }),
       event({ event_name: 'recording.source-changed', event_data_origin: 'leg', event_data_leg_sid: 'CA1' }),
-      event({ event_name: 'recording.source-changed', event_data_origin: 'leg', event_data_leg_sid: 'CA1' }),
-      event({ event_name: 'recording.source-changed', event_data_origin: 'leg', event_data_leg_sid: 'CA2' }),
     ]);
 
-    expect(sources).toEqual({ browser: { env: 'ppdtesting-', agentId: 7 }, clockOffsetMs: 0, legSids: ['CA1', 'CA2'] });
+    expect(sources).toEqual({ browser: { env: 'ppdtesting-', agentId: 7 } });
   });
 
   it('finds nothing in a session of another app, or of another contract version', () => {
-    expect(audioSourcesOf([event({ event_name: 'click' })])).toEqual({
-      browser: undefined,
-      clockOffsetMs: 0,
-      legSids: [],
-    });
+    expect(audioSourcesOf([event({ event_name: 'click' })])).toEqual({ browser: undefined });
     expect(
       audioSourcesOf([
         event({
@@ -75,10 +61,9 @@ describe('call audio', () => {
     expect([
       trackOf('browser', 'mic'),
       trackOf('browser', 'heard'),
-      trackOf('carrier', 'inbound'),
+      trackOf('browser', 'x'),
       trackOf('carrier', 'outbound'),
-      trackOf('carrier', 'x'),
-    ]).toEqual(['mic', 'heard', 'agent', 'customer', undefined]);
+    ]).toEqual(['mic', 'heard', undefined, undefined]);
   });
 
   it('finds the segment at a moment, and none in a hole between segments', () => {
@@ -94,60 +79,17 @@ describe('call audio', () => {
     const i = (a: number, b: number) => ({ startMs: a, endMs: b });
     expect(union([i(5, 7), i(0, 2), i(1, 3)])).toEqual([i(0, 3), i(5, 7)]);
     expect(subtract([i(0, 10)], [i(2, 3), i(5, 12)])).toEqual([i(0, 2), i(3, 5)]);
-    expect(intersect([i(0, 4), i(6, 10)], [i(3, 7)])).toEqual([i(3, 4), i(6, 7)]);
-    expect(coverage([seg('agent', 0, 60_000, [[10_000, 12_000]])])).toEqual([i(0, 10_000), i(12_000, 60_000)]);
-  });
-
-  it("shows where the agent's words did not reach the carrier, and where the customer did not reach the agent", () => {
-    const tracks = {
-      mic: [seg('mic', 0, 10_000), seg('mic', 10_000, 10_000)],
-      // The carrier received nothing of the agent from 4 to 9 s: the agent's internet.
-      agent: [seg('agent', 0, 20_000, [[4_000, 9_000]])],
-      customer: [seg('customer', 0, 20_000)],
-      // The agent's computer played nothing from 15 s: their downlink.
-      heard: [seg('heard', 0, 15_000)],
-    };
-
-    expect(losses(tracks)).toEqual({
-      uplink: [{ startMs: 4_000, endMs: 9_000 }],
-      downlink: [{ startMs: 15_000, endMs: 20_000 }],
-    });
-  });
-
-  it('reports nothing lost between legs, or shorter than half a second', () => {
-    const tracks = {
-      mic: [seg('mic', 0, 100_000)],
-      agent: [seg('agent', 50_000, 10_000, [[55_000, 55_200]])],
-      customer: [seg('customer', 50_000, 10_000)],
-      heard: [seg('heard', 50_000, 10_000)],
-    };
-
-    expect(losses(tracks)).toEqual({ uplink: [], downlink: [] });
-  });
-
-  it("puts the carrier's tracks on the agent's computer's clock, which the replay runs on", () => {
-    const sources = audioSourcesOf([
-      event({
-        event_name: 'recording.started',
-        event_data_recording_contract: 'v1',
-        event_data_source: 'browser',
-        event_data_env: 'e',
-        event_data_agent_id: '7',
-        event_data_clock_offset_ms: '3000',
-      }),
+    expect(coverage([seg('mic', 0, 10_000), seg('mic', 10_000, 10_000), seg('mic', 30_000, 10_000)])).toEqual([
+      i(0, 20_000),
+      i(30_000, 40_000),
     ]);
-    // The recorder's clock is 3 s ahead of the PC's.
-    const tracks = {
-      mic: [seg('mic', 10_000, 1000)],
-      heard: [],
-      agent: [seg('agent', 13_000, 1000, [[13_200, 13_400]])],
-      customer: [seg('customer', 13_000, 1000)],
-    };
+  });
 
-    const shifted = onSessionClock(tracks, sources.clockOffsetMs);
+  it("shows where the agent's microphone was not recorded within the session, ignoring seams", () => {
+    const i = (a: number, b: number) => ({ startMs: a, endMs: b });
+    const mic = [seg('mic', 5_000, 10_000), seg('mic', 15_200, 10_000), seg('mic', 40_000, 10_000)];
 
-    expect(shifted.mic[0].startMs).toBe(10_000);
-    expect(shifted.agent[0]).toMatchObject({ startMs: 10_000, gaps: [{ startMs: 10_200, endMs: 10_400 }] });
-    expect(shifted.customer[0].startMs).toBe(10_000);
+    expect(missing(mic, i(0, 60_000))).toEqual([i(0, 5_000), i(25_200, 40_000), i(50_000, 60_000)]);
+    expect(missing([], i(0, 1_000))).toEqual([i(0, 1_000)]);
   });
 });

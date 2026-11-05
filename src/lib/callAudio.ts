@@ -4,28 +4,25 @@ import type { JourneyEvent } from './journey';
  * The call audio of a session, as the call recorder keeps it, and where on the
  * session's timeline each piece plays.
  *
- * Two sources, four tracks (see the call recorder's README):
+ * Both tracks are recorded on the agent's computer, from the agent's point of
+ * view (see the call recorder's README):
  *
- *   mic       the agent's microphone, recorded on their computer (whole shift)
- *   heard     what came out of the agent's speaker, recorded there too
- *   agent     the agent as the carrier received them (carrier stream of the agent's leg)
- *   customer  what the carrier sent the agent: the customer
+ *   mic    the agent's microphone, for the whole shift (also between calls)
+ *   heard  what the agent heard: the leg's remote audio as their browser played it
  *
- * The conversation is mic + customer; agent and heard show where audio was
- * lost on the way: mic without agent is the agent's uplink, customer without
- * heard their downlink.
+ * Both are on the agent's computer's clock, as the replay is, so they need no
+ * shifting. Nothing is taken from the carrier.
  *
  * Where the audio is comes from the session's own Faro events, contract
- * "recording" v1 of the dialer (recording.started: env, agent_id;
- * recording.source-changed: leg_sid while on a leg). Sessions of other apps
- * have none, and have no call audio.
+ * "recording" v1 of the dialer (recording.started: env, agent_id). Sessions
+ * of other apps have none, and have no call audio.
  */
-export type CallAudioTrack = 'mic' | 'customer' | 'agent' | 'heard';
+export type CallAudioTrack = 'mic' | 'heard';
 
-export const CALL_AUDIO_TRACKS: readonly CallAudioTrack[] = ['mic', 'customer', 'agent', 'heard'];
+export const CALL_AUDIO_TRACKS: readonly CallAudioTrack[] = ['mic', 'heard'];
 
-/** What plays by default: the two halves of the conversation. */
-export const DEFAULT_AUDIBLE: ReadonlySet<CallAudioTrack> = new Set(['mic', 'customer']);
+/** What plays by default: the whole conversation as the agent had it. */
+export const DEFAULT_AUDIBLE: ReadonlySet<CallAudioTrack> = new Set(['mic', 'heard']);
 
 export interface Interval {
   startMs: number;
@@ -38,21 +35,11 @@ export interface AudioSegment {
   track: CallAudioTrack;
   startMs: number;
   durationMs: number;
-  /** Stretches the file holds silence for, because the carrier sent nothing. */
-  gaps: Interval[];
 }
 
-/** Where the session's audio is kept. */
+/** Where the session's audio is kept: the agent's computer's recording, filed by environment and agent. */
 export interface AudioSources {
-  /** The agent's computer's recording, filed by environment and agent. */
   browser?: { env: string; agentId: number };
-  /**
-   * The recorder's clock minus the agent's computer's (which the replay and
-   * the browser's audio are on), as the browser measured it; 0 when unknown.
-   */
-  clockOffsetMs: number;
-  /** The agent's legs, whose carrier streams are filed by CallSid. */
-  legSids: string[];
 }
 
 const RECORDING_CONTRACT = 'v1';
@@ -60,8 +47,6 @@ const RECORDING_CONTRACT = 'v1';
 /** Reads the session's recording events (contract v1); nothing for sessions without any. */
 export function audioSourcesOf(journey: JourneyEvent[]): AudioSources {
   let browser: AudioSources['browser'];
-  let clockOffsetMs = 0;
-  const legSids = new Set<string>();
   for (const event of journey) {
     const a = event.attributes;
     if (
@@ -73,44 +58,14 @@ export function audioSourcesOf(journey: JourneyEvent[]): AudioSources {
       if (a.event_data_env && Number.isInteger(agentId) && agentId > 0) {
         browser = { env: a.event_data_env, agentId };
       }
-      const offset = Number(a.event_data_clock_offset_ms);
-      if (a.event_data_clock_offset_ms !== undefined && Number.isFinite(offset)) {
-        clockOffsetMs = offset;
-      }
-    }
-    if (a.event_name === 'recording.source-changed' && a.event_data_leg_sid) {
-      legSids.add(a.event_data_leg_sid);
     }
   }
-  return { browser, clockOffsetMs, legSids: [...legSids] };
-}
-
-/**
- * The carrier's tracks onto the session's clock: the recorder stamps them with
- * its own clock, the replay and the browser's tracks run on the agent's PC's.
- */
-export function onSessionClock<T extends Record<CallAudioTrack, AudioSegment[]>>(tracks: T, clockOffsetMs: number): T {
-  if (clockOffsetMs === 0) {
-    return tracks;
-  }
-  const shift = (segments: AudioSegment[]) =>
-    segments.map((segment) => ({
-      ...segment,
-      startMs: segment.startMs - clockOffsetMs,
-      gaps: segment.gaps.map((gap) => ({ startMs: gap.startMs - clockOffsetMs, endMs: gap.endMs - clockOffsetMs })),
-    }));
-  return { ...tracks, agent: shift(tracks.agent), customer: shift(tracks.customer) };
+  return { browser };
 }
 
 /** The recorder's names for the tracks. */
 export function trackOf(source: string, track: string): CallAudioTrack | undefined {
-  if (source === 'browser') {
-    return track === 'mic' || track === 'heard' ? track : undefined;
-  }
-  if (source === 'carrier') {
-    return track === 'inbound' ? 'agent' : track === 'outbound' ? 'customer' : undefined;
-  }
-  return undefined;
+  return source === 'browser' && (track === 'mic' || track === 'heard') ? track : undefined;
 }
 
 /** The segment playing at `wallMs` (segments of one track, sorted by start), by binary search. */
@@ -180,56 +135,21 @@ export function subtract(from: Interval[], minus: Interval[]): Interval[] {
   return result;
 }
 
-/** Where a track has audio: its segments, less the gaps the carrier left. */
+/** Where a track has audio: its segments. */
 export function coverage(segments: AudioSegment[]): Interval[] {
-  return subtract(spansOf(segments), union(segments.flatMap((segment) => segment.gaps)));
-}
-
-function spansOf(segments: AudioSegment[]): Interval[] {
   return union(segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.startMs + segment.durationMs })));
 }
 
-/** Shorter than this is jitter, not lost audio. */
-export const MIN_LOSS_MS = 500;
-
-export interface Losses {
-  /** The agent's computer has their voice, the carrier did not receive it: the agent's uplink. */
-  uplink: Interval[];
-  /** The carrier sent the customer, the agent's computer did not play it: the agent's downlink. */
-  downlink: Interval[];
-}
-
-/** Where both have audio (both unions). */
-export function intersect(a: Interval[], b: Interval[]): Interval[] {
-  const result: Interval[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    const startMs = Math.max(a[i].startMs, b[j].startMs);
-    const endMs = Math.min(a[i].endMs, b[j].endMs);
-    if (endMs > startMs) {
-      result.push({ startMs, endMs });
-    }
-    if (a[i].endMs < b[j].endMs) {
-      i++;
-    } else {
-      j++;
-    }
-  }
-  return result;
-}
+/** Shorter than this is the seam between two segments, not missing audio. */
+export const MIN_MISSING_MS = 500;
 
 /**
- * Where audio was lost between the agent's computer and the carrier, while the
- * carrier streamed the agent's leg (between legs it has nothing to compare).
+ * Where the agent's microphone was not recorded within the session: before
+ * the leg had its microphone, without the microphone permission, after the
+ * idle microphone gave up, or while the tab was closed or crashed.
  */
-export function losses(tracks: Record<CallAudioTrack, AudioSegment[]>): Losses {
-  const legs = union([...spansOf(tracks.agent), ...spansOf(tracks.customer)]);
-  const long = (intervals: Interval[]) => intervals.filter((i) => i.endMs - i.startMs >= MIN_LOSS_MS);
-  return {
-    uplink: long(intersect(subtract(coverage(tracks.mic), coverage(tracks.agent)), legs)),
-    downlink: long(intersect(subtract(coverage(tracks.customer), coverage(tracks.heard)), legs)),
-  };
+export function missing(segments: AudioSegment[], session: Interval): Interval[] {
+  return subtract([session], coverage(segments)).filter((i) => i.endMs - i.startMs >= MIN_MISSING_MS);
 }
 
 /**

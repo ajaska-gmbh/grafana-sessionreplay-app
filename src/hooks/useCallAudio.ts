@@ -3,13 +3,11 @@ import { CallAudioEngine } from '../lib/audioEngine';
 import {
   audioSourcesOf,
   connectionLost,
-  onSessionClock,
   type AudioSources,
   DEFAULT_AUDIBLE,
-  losses,
+  missing,
   type CallAudioTrack,
   type Interval,
-  type Losses,
 } from '../lib/callAudio';
 import type { JourneyEvent } from '../lib/journey';
 import { type PlayerClock, useClockEffect } from '../lib/playerClock';
@@ -24,7 +22,8 @@ export interface CallAudio {
   loading: boolean;
   error?: string;
   segments: CallAudioSegments;
-  losses: Losses;
+  /** Where the agent's microphone was not recorded within the session. */
+  micMissing: Interval[];
   /** Where the agent's browser had no network. */
   connectionLost: Interval[];
   audible: ReadonlySet<CallAudioTrack>;
@@ -50,8 +49,7 @@ export function useCallAudio(options: {
   const { journey, range, clock, enabled, live } = options;
   const sources = useMemo(() => audioSourcesOf(journey), [journey]);
   const sourcesKey = JSON.stringify(sources);
-  const hasSources = sources.browser !== undefined || sources.legSids.length > 0;
-  const available = enabled && hasSources && range !== undefined;
+  const available = enabled && sources.browser !== undefined && range !== undefined;
 
   const [segments, setSegments] = useState<CallAudioSegments>(noSegments);
   const [loading, setLoading] = useState(false);
@@ -81,12 +79,10 @@ export function useCallAudio(options: {
     const load = () => {
       setLoading(true);
       const sessionSources: AudioSources = JSON.parse(sourcesKey);
-      // The carrier's segments are filed on the recorder's clock: list around the session on that clock.
-      const offset = sessionSources.clockOffsetMs;
-      listSessionAudio(sessionSources, fromMs + Math.min(0, offset), toMs + Math.max(0, offset))
+      listSessionAudio(sessionSources, fromMs, toMs)
         .then((listed) => {
           if (!cancelled) {
-            setSegments(onSessionClock(listed, offset));
+            setSegments(listed);
             setError(undefined);
           }
         })
@@ -119,7 +115,10 @@ export function useCallAudio(options: {
     }
   });
 
-  const lost = useMemo(() => losses(segments), [segments]);
+  const micMissing = useMemo(
+    () => (fromMs === undefined || toMs === undefined ? [] : missing(segments.mic, { startMs: fromMs, endMs: toMs })),
+    [segments, fromMs, toMs]
+  );
   const offline = useMemo(() => connectionLost(journey), [journey]);
 
   return {
@@ -127,7 +126,7 @@ export function useCallAudio(options: {
     loading,
     error,
     segments,
-    losses: lost,
+    micMissing,
     connectionLost: offline,
     audible,
     toggle: (track) =>
