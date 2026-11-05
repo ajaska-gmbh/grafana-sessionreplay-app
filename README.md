@@ -107,6 +107,36 @@ datasource (default uid `loki`) and the Tempo datasource used for trace links
 The pages are available to the **Editor** role and above. Recordings can contain
 personal data, so restrict access the same way you restrict Explore on Loki.
 
+**Search fields** (optional): Faro event attributes a search looks up exactly in
+every session's events, on the server, e.g. `lead_id` and `crm_lead_id` (the
+dialer's `call.bridged` events). A value then finds every session with an event
+carrying it, also those the list's 5000-marker limit leaves out; the replay
+marks those events and opens at the first one. The sessions page keeps search,
+apps and range in the URL (`?q=&apps=&lookback=`), so a link can open a search.
+Without search fields the list is searched as before, in the browser.
+
+**Call audio** (optional): the call recorder's read API URL (one for every
+dialer environment, e.g. `http://call-recorder.call-recorder.svc:8081`) and its
+read token (kept encrypted). The `recorder` plugin route (GET only, Editor)
+adds the token on Grafana's side. A session plays the audio its own
+`recording` v1 events point to:
+
+| Row              | What it is                                                      |
+| ---------------- | --------------------------------------------------------------- |
+| Agent mic        | the agent's microphone, recorded on their computer, whole shift |
+| Customer         | what the carrier sent the agent                                 |
+| Agent at carrier | the agent as the carrier received them                          |
+| Heard by agent   | what the agent's computer played                                |
+
+Agent mic and Customer play by default: the conversation. Red marks audio lost
+on the way (the agent's words missing at the carrier: their uplink; the
+customer missing on their computer: their downlink); hatched, where the agent's
+browser had no network; grey, where the carrier sent nothing. The audio follows
+the replay's clock (play, pause, seek, skipped inactivity, 0.5–2x; muted
+faster). Sessions without recording events, as every other app's, request
+nothing from the recorder. Self-hosted Grafana only: the recorder is
+cluster-internal.
+
 ## Install
 
 Signed releases are privately signed for `https://grafana.ajaska.de/` and

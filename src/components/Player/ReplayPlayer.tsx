@@ -53,6 +53,8 @@ export interface ReplayPlayerProps {
   audioLevels?: AudioLevelWindow[];
   /** Where the player writes its time; others (journey, call audio) follow it. One of its own when not given. */
   clock?: PlayerClock;
+  /** More rows on the timeline's axis, under the level graph (the call audio); they follow `clock`. */
+  belowTimeline?: React.ReactNode;
   onShare?: (offsetMs: number) => Promise<void> | void;
   autoPlay?: boolean;
   /**
@@ -82,6 +84,7 @@ export function ReplayPlayer({
   markers = [],
   audioLevels = [],
   clock: givenClock,
+  belowTimeline,
   onShare,
   autoPlay = false,
   live = false,
@@ -505,6 +508,7 @@ export function ReplayPlayer({
                 />
               </div>
             )}
+            {belowTimeline && total > 0 && <div className={styles.graphTrack}>{belowTimeline}</div>}
           </div>
 
           <div className={styles.controls}>
