@@ -8,6 +8,7 @@ import { formatClock, replayUrl } from '../../lib/format';
 import { linkOffset } from '../../lib/playerEvents';
 import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
 import { PlayerClock } from '../../lib/playerClock';
+import { eventMatches } from '../../lib/sessionSearch';
 import type { JourneyEvent } from '../../lib/journey';
 import { UserJourney } from '../Journey/UserJourney';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
@@ -26,6 +27,9 @@ export interface SessionReplayProps {
   live?: boolean;
   lokiUid: string;
   tempoUid: string;
+  /** A searched value (e.g. a lead id): events carrying it in a search field are marked, the first one is jumped to. */
+  highlight?: string;
+  searchFields?: string[];
   /** Height of the player + journey area; the full-screen page fills the view. */
   height?: number | string;
 }
@@ -87,6 +91,27 @@ export function SessionReplay(props: SessionReplayProps) {
         title: event.title,
       }));
   }, [data.journey, recordingStartMs]);
+
+  const { highlight, searchFields } = props;
+  const isHighlighted = useMemo(
+    () =>
+      highlight && searchFields?.length
+        ? (event: JourneyEvent) => eventMatches(event.attributes, searchFields, highlight)
+        : undefined,
+    [highlight, searchFields]
+  );
+  // A search result opens where the searched value first appears, unless the link names a time.
+  const [jumpedToMatch, setJumpedToMatch] = useState(t !== undefined);
+  useEffect(() => {
+    if (jumpedToMatch || !isHighlighted || recordingStartMs === undefined) {
+      return;
+    }
+    const first = data.journey.find(isHighlighted);
+    if (first) {
+      setJumpedToMatch(true);
+      setSeekRequest({ offsetMs: Math.max(0, first.timeMs - recordingStartMs), nonce: Date.now() });
+    }
+  }, [jumpedToMatch, isHighlighted, recordingStartMs, data.journey]);
 
   const onJump = useCallback(
     (event: JourneyEvent) => {
@@ -205,6 +230,7 @@ export function SessionReplay(props: SessionReplayProps) {
           events={data.journey}
           recordingStartMs={recordingStartMs}
           clock={clock}
+          isHighlighted={isHighlighted}
           loading={data.loadingJourney}
           tempoUid={tempoUid}
           onJump={onJump}

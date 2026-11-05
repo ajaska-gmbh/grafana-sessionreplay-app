@@ -21,7 +21,7 @@ function ReplayPage() {
   const styles = useStyles2(getStyles);
   const { appName = '', sessionId = '' } = useParams();
   const [searchParams] = useSearchParams();
-  const { lokiUid, tempoUid } = useSettings();
+  const { lokiUid, tempoUid, searchFields } = useSettings();
   const from = numberParam(searchParams.get('from'));
   const to = numberParam(searchParams.get('to'));
 
@@ -44,6 +44,8 @@ function ReplayPage() {
           t={numberParam(searchParams.get('t'))}
           track={numberParam(searchParams.get('track'))}
           live={searchParams.get('live') === '1'}
+          highlight={searchParams.get('q') ?? undefined}
+          searchFields={searchFields}
           lokiUid={lokiUid}
           tempoUid={tempoUid}
         />

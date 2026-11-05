@@ -3,6 +3,7 @@ import { getBackendSrv } from '@grafana/runtime';
 import { appFilter, eventLineFilter, sessionLineFilter, STREAMS } from './logql';
 import { createLokiFetcher } from './loki';
 import { REPLAY_STARTED_EVENT, summariseSessions, type SessionSummary } from './sessions';
+import { sessionSearchQuery } from './sessionSearch';
 
 interface MetricFrame {
   schema?: { fields?: Array<{ name: string; labels?: Record<string, string> }> };
@@ -108,6 +109,32 @@ export async function fetchActiveSessionIds(
 ): Promise<Set<string>> {
   const expr = `sum by (session_id) (count_over_time(${STREAMS.payloads}${appFilter(apps)} | logfmt session_id [${Math.ceil(windowMs / 1000)}s]))`;
   const series = await instantSeries(lokiUid, expr, nowMs - windowMs, nowMs);
+  return new Set(
+    series
+      .filter((entry) => entry.value > 0)
+      .map((entry) => entry.labels.session_id)
+      .filter(Boolean)
+  );
+}
+
+/** Sessions with an event whose search field is exactly `value` (see sessionSearchQuery). */
+export async function fetchMatchingSessionIds(
+  lokiUid: string,
+  fields: string[],
+  value: string,
+  apps: string[],
+  fromMs: number,
+  toMs: number
+): Promise<Set<string>> {
+  if (fields.length === 0) {
+    return new Set();
+  }
+  const series = await instantSeries(
+    lokiUid,
+    sessionSearchQuery(fields, value, apps, rangeSeconds(fromMs, toMs)),
+    fromMs,
+    toMs
+  );
   return new Set(
     series
       .filter((entry) => entry.value > 0)

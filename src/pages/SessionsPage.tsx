@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { css } from '@emotion/css';
 import { dateTimeFormat, GrafanaTheme2 } from '@grafana/data';
 import { PluginPage } from '@grafana/runtime';
@@ -19,7 +20,14 @@ import {
 } from '@grafana/ui';
 import { useSettings } from '../hooks/useSettings';
 import { replayUrl } from '../lib/format';
-import { fetchActiveSessionIds, fetchAppNames, fetchErrorCounts, fetchSessions } from '../lib/sessionQueries';
+import {
+  fetchActiveSessionIds,
+  fetchAppNames,
+  fetchErrorCounts,
+  fetchMatchingSessionIds,
+  fetchSessions,
+} from '../lib/sessionQueries';
+import { searchValue } from '../lib/sessionSearch';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
@@ -33,7 +41,30 @@ const LOOKBACKS: Array<ComboboxOption<number>> = [
   { label: 'Last 14 days', value: 14 * 24 * 3600_000 },
 ];
 
-type Row = SessionSummary & { id: string; live: boolean };
+type Row = SessionSummary & { id: string; live: boolean; matched: boolean };
+
+/** How long typing has to pause before the search fields are looked up. */
+const SEARCH_DEBOUNCE_MS = 400;
+/** Matching sessions fetched one by one when the list (its marker limit) did not include them. */
+const MAX_EXTRA_MATCHES = 25;
+const DEFAULT_LOOKBACK = 24 * 3600_000;
+
+/** Sessions the search fields matched: for which value, and which sessions. */
+interface Matches {
+  key: string;
+  ids: Set<string>;
+  extra: SessionSummary[];
+  failure?: string;
+}
+
+function lookbackParam(value: string | null): number {
+  const parsed = Number(value);
+  return LOOKBACKS.some((option) => option.value === parsed) ? parsed : DEFAULT_LOOKBACK;
+}
+
+function appsParam(value: string | null): string[] {
+  return value ? value.split(',').filter(Boolean) : [];
+}
 
 interface QueryResult {
   key: string;
@@ -47,13 +78,45 @@ interface QueryResult {
 
 function SessionsPage() {
   const styles = useStyles2(getStyles);
-  const { lokiUid } = useSettings();
-  const [lookback, setLookback] = useState<number>(24 * 3600_000);
-  const [apps, setApps] = useState<string[]>([]);
+  const { lokiUid, searchFields } = useSettings();
+  // Search, apps and range are in the URL, so a link (e.g. from the CRM) can open a search.
+  const [params, setParams] = useSearchParams();
+  const [lookback, setLookbackState] = useState<number>(() => lookbackParam(params.get('lookback')));
+  const [apps, setAppsState] = useState<string[]>(() => appsParam(params.get('apps')));
   const [appOptions, setAppOptions] = useState<Array<ComboboxOption<string>>>([]);
   const [environment, setEnvironment] = useState<string | undefined>();
-  const [search, setSearch] = useState('');
+  const [search, setSearchState] = useState(() => params.get('q') ?? '');
   const [result, setResult] = useState<QueryResult>();
+  const [matches, setMatches] = useState<Matches>();
+
+  const remember = (name: string, value: string | undefined) =>
+    setParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        if (value) {
+          next.set(name, value);
+        } else {
+          next.delete(name);
+        }
+        return next;
+      },
+      { replace: true }
+    );
+  const setSearch = (value: string) => {
+    setSearchState(value);
+    remember('q', value.trim() || undefined);
+  };
+  const setApps = (value: string[]) => {
+    setAppsState(value);
+    remember('apps', value.join(',') || undefined);
+  };
+  const setLookback = (value: number) => {
+    setLookbackState(value);
+    remember('lookback', value === DEFAULT_LOOKBACK ? undefined : String(value));
+  };
+
+  const lookup = searchValue(search);
+  const matchKey = JSON.stringify({ lokiUid, apps, lookback, lookup, searchFields });
 
   const queryKey = JSON.stringify({ lokiUid, apps, lookback });
   const loading = result?.key !== queryKey;
@@ -104,24 +167,63 @@ function SessionsPage() {
     };
   }, [lokiUid, apps, lookback]);
 
+  // The search fields, looked up on the server once typing pauses.
+  useEffect(() => {
+    if (!lookup || searchFields.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      fetchMatchingSessionIds(lokiUid, searchFields, lookup, apps, now - lookback, now)
+        .then(async (ids) => {
+          const listed = new Set(sessions.map((session) => session.sessionId));
+          const missing = [...ids].filter((id) => !listed.has(id)).slice(0, MAX_EXTRA_MATCHES);
+          const extra = await Promise.all(
+            missing.map((id) =>
+              fetchSessions(lokiUid, apps, now - lookback, now, 100, id).then((found) => found.sessions)
+            )
+          );
+          if (!cancelled) {
+            setMatches({ key: matchKey, ids, extra: extra.flat() });
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            const failureText = (error as { data?: { message?: string } })?.data?.message ?? String(error);
+            setMatches({ key: matchKey, ids: new Set(), extra: [], failure: failureText });
+          }
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [lokiUid, apps, lookback, lookup, searchFields, matchKey, sessions]);
+
+  const currentMatches = matches?.key === matchKey ? matches : undefined;
+  const matchedIds = useMemo(() => currentMatches?.ids ?? new Set<string>(), [currentMatches]);
+
   const environments = useMemo(
     () => [...new Set(sessions.map((session) => session.environment).filter(Boolean))].sort(),
     [sessions]
   );
 
-  const rows = useMemo<Row[]>(
-    () =>
-      sessions
-        .filter((session) => !environment || session.environment === environment)
-        .filter((session) => matchesSearch(session, search))
-        .map((session) => ({
-          ...session,
-          id: session.sessionId,
-          errors: errors.get(session.sessionId) ?? 0,
-          live: active.has(session.sessionId),
-        })),
-    [sessions, environment, search, errors, active]
-  );
+  const rows = useMemo<Row[]>(() => {
+    const listed = new Set(sessions.map((session) => session.sessionId));
+    const all = [...sessions, ...(currentMatches?.extra ?? []).filter((session) => !listed.has(session.sessionId))];
+    return all
+      .filter((session) => !environment || session.environment === environment)
+      .filter((session) => matchedIds.has(session.sessionId) || matchesSearch(session, search))
+      .map((session) => ({
+        ...session,
+        id: session.sessionId,
+        errors: errors.get(session.sessionId) ?? 0,
+        live: active.has(session.sessionId),
+        matched: matchedIds.has(session.sessionId),
+      }))
+      .sort((a, b) => Number(b.matched) - Number(a.matched) || b.startedMs - a.startedMs);
+  }, [sessions, currentMatches, environment, search, matchedIds, errors, active]);
 
   const columns = useMemo<Array<Column<Row>>>(
     () => [
@@ -135,7 +237,18 @@ function SessionsPage() {
         id: 'sessionId',
         header: 'Session ID',
         sortType: 'string',
-        cell: ({ row }) => <code>{row.original.sessionId}</code>,
+        cell: ({ row }) => (
+          <Stack gap={1} alignItems="center">
+            <code>{row.original.sessionId}</code>
+            {row.original.matched && (
+              <Tooltip content="An event of this session carries the searched value (e.g. the lead)">
+                <span>
+                  <Badge text="Match" color="green" icon="search" />
+                </span>
+              </Tooltip>
+            )}
+          </Stack>
+        ),
       },
       {
         id: 'userEmail',
@@ -176,7 +289,10 @@ function SessionsPage() {
               size="sm"
               icon="play"
               variant="secondary"
-              href={replayUrl(row.original.appName, row.original.sessionId, sessionRange(row.original, nowMs))}
+              href={replayUrl(row.original.appName, row.original.sessionId, {
+                ...sessionRange(row.original, nowMs),
+                q: row.original.matched ? lookup : undefined,
+              })}
             >
               Replay
             </LinkButton>
@@ -198,7 +314,7 @@ function SessionsPage() {
         ),
       },
     ],
-    [nowMs]
+    [nowMs, lookup]
   );
 
   return (
@@ -207,7 +323,11 @@ function SessionsPage() {
         <Stack gap={1} wrap="wrap" alignItems="center">
           <div className={styles.search}>
             <FilterInput
-              placeholder="Search session, user, page, browser…"
+              placeholder={
+                searchFields.length > 0
+                  ? `Search session, user, page, browser, or ${searchFields.join(' / ')}…`
+                  : 'Search session, user, page, browser…'
+              }
               value={search}
               onChange={setSearch}
               data-testid={testIds.sessions.search}
@@ -240,6 +360,11 @@ function SessionsPage() {
           <Alert severity="warning" title="Not all sessions are listed">
             The range holds more recordings than one query returns; only the newest are shown. Pick a shorter range or
             filter by app.
+          </Alert>
+        )}
+        {currentMatches?.failure && (
+          <Alert severity="warning" title={`Could not search ${searchFields.join(' / ')}`}>
+            {currentMatches.failure}
           </Alert>
         )}
         {failure && (

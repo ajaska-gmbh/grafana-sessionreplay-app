@@ -37,6 +37,8 @@ export interface UserJourneyProps {
   clock?: PlayerClock;
   loading?: boolean;
   tempoUid: string;
+  /** Marks the events a search found (e.g. the calls with the searched lead). */
+  isHighlighted?: (event: JourneyEvent) => boolean;
   onJump: (event: JourneyEvent) => void;
 }
 
@@ -81,6 +83,7 @@ export const UserJourney = memo(function UserJourney({
   clock,
   loading,
   tempoUid,
+  isHighlighted,
   onJump,
 }: UserJourneyProps) {
   const styles = useStyles2(getStyles);
@@ -225,7 +228,8 @@ export const UserJourney = memo(function UserJourney({
                   className={cx(
                     styles.row,
                     index === current && styles.current,
-                    index > current && current >= 0 && styles.future
+                    index > current && current >= 0 && styles.future,
+                    isHighlighted?.(event) && styles.highlighted
                   )}
                   style={{ transform: `translateY(${item.start}px)`, height: isOpen ? undefined : ROW_PX }}
                   data-testid={testIds.journey.row}
@@ -342,6 +346,10 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
   current: css({ borderLeftColor: theme.colors.primary.main, background: theme.colors.action.selected }),
   future: css({ opacity: 0.6 }),
+  highlighted: css({
+    boxShadow: `inset 0 0 0 1px ${theme.colors.success.border}`,
+    background: theme.colors.success.transparent,
+  }),
   rowMain: css({ display: 'flex', alignItems: 'center', gap: theme.spacing(1), minWidth: 0 }),
   offset: css({
     fontFamily: theme.typography.fontFamilyMonospace,

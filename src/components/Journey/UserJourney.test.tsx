@@ -21,19 +21,17 @@ describe('user journey', () => {
   // jsdom lays nothing out: give the list, and every row, a browser-like size.
   beforeEach(() => {
     // Each row measures 44 px.
-    jest
-      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-      .mockReturnValue({
-        width: 400,
-        height: 44,
-        top: 0,
-        left: 0,
-        bottom: 44,
-        right: 400,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect);
+    jest.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 400,
+      height: 44,
+      top: 0,
+      left: 0,
+      bottom: 44,
+      right: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
     jest.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
     jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
   });
