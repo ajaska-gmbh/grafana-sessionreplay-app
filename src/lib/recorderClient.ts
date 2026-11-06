@@ -19,6 +19,8 @@ interface ListedSegment {
   track: string;
   start_ms: number;
   duration_ms: number;
+  /** Server minus computer clock the segment was filed with; absent on segments filed on the computer's clock. */
+  clock_offset_ms?: number;
 }
 
 async function list(path: string, params: Record<string, string | number>): Promise<AudioSegment[]> {
@@ -29,11 +31,13 @@ async function list(path: string, params: Record<string, string | number>): Prom
   const segments: AudioSegment[] = [];
   for (const s of response.data.segments ?? []) {
     const track = trackOf(s.source, s.track);
-    if (track && Number.isFinite(s.start_ms) && s.duration_ms > 0) {
+    const offset = s.clock_offset_ms ?? 0;
+    if (track && Number.isFinite(s.start_ms) && Number.isFinite(offset) && s.duration_ms > 0) {
       segments.push({
         key: s.key,
         track,
-        startMs: s.start_ms,
+        // Back onto the computer's clock, which the replay runs on.
+        startMs: s.start_ms - offset,
         durationMs: s.duration_ms,
       });
     }
@@ -47,7 +51,7 @@ export function noSegments(): CallAudioSegments {
   return { mic: [], heard: [] };
 }
 
-/** Every segment of the session's audio between fromMs and toMs, by track, sorted. */
+/** Every segment of the session's audio filed between fromMs and toMs (server clock), by track, sorted on the computer's clock. */
 export async function listSessionAudio(
   sources: AudioSources,
   fromMs: number,

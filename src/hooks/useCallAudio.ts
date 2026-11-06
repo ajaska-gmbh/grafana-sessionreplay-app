@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { CallAudioEngine } from '../lib/audioEngine';
 import {
   audioSourcesOf,
+  clockOffsetsOf,
   connectionLost,
+  listingRange,
   type AudioSources,
   DEFAULT_AUDIBLE,
   missing,
@@ -49,6 +51,7 @@ export function useCallAudio(options: {
   const { journey, range, clock, enabled, live } = options;
   const sources = useMemo(() => audioSourcesOf(journey), [journey]);
   const sourcesKey = JSON.stringify(sources);
+  const offsetsKey = useMemo(() => JSON.stringify(clockOffsetsOf(journey)), [journey]);
   const available = enabled && sources.browser !== undefined && range !== undefined;
 
   const [segments, setSegments] = useState<CallAudioSegments>(noSegments);
@@ -79,7 +82,12 @@ export function useCallAudio(options: {
     const load = () => {
       setLoading(true);
       const sessionSources: AudioSources = JSON.parse(sourcesKey);
-      listSessionAudio(sessionSources, fromMs, toMs)
+      // While live, the session goes on past the range loaded at the start.
+      const span = listingRange(
+        { startMs: fromMs, endMs: live ? Math.max(toMs, Date.now()) : toMs },
+        JSON.parse(offsetsKey)
+      );
+      listSessionAudio(sessionSources, span.startMs, span.endMs)
         .then((listed) => {
           if (!cancelled) {
             setSegments(listed);
@@ -103,7 +111,7 @@ export function useCallAudio(options: {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [available, sourcesKey, fromMs, toMs, live]);
+  }, [available, sourcesKey, offsetsKey, fromMs, toMs, live]);
 
   useEffect(() => engineRef.current?.setSegments(segments), [segments]);
   useEffect(() => engineRef.current?.setAudible(audible), [audible]);

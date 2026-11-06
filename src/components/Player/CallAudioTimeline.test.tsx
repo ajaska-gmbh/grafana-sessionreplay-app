@@ -66,6 +66,25 @@ describe('call audio timeline', () => {
     expect(screen.getByTestId(testIds.player.callAudioRow('heard'))).toBeInTheDocument();
   });
 
+  it("names times of day on the server's clock where the agent's computer clock is wrong", () => {
+    // The computer is 2 h behind: what it recorded at 10:00 on its clock happened at 12:00.
+    const tenOclock = new Date(2026, 10, 6, 10, 0, 0).getTime();
+    const clock = clockAt(tenOclock, 20_000);
+    clock.update({ clockOffsetMs: 2 * 3600_000 });
+    render(
+      <CallAudioTimeline
+        audio={audio({
+          segments: { ...noSegments(), mic: [seg('mic', tenOclock + 5000, 10_000)] },
+          micMissing: [{ startMs: tenOclock, endMs: tenOclock + 5000 }],
+        })}
+        clock={clock}
+        onSeek={jest.fn()}
+      />
+    );
+
+    expect(screen.getByTitle(/microphone was not recorded/).getAttribute('title')).toMatch(/12:00:00.*12:00:05/);
+  });
+
   it('jumps where a row is clicked', () => {
     const onSeek = jest.fn();
     render(

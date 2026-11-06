@@ -42,7 +42,23 @@ describe('useCallAudio', () => {
 
     await waitFor(() => expect(result.current.segments.mic).toHaveLength(1));
     expect(result.current.available).toBe(true);
-    expect(listSessionAudio).toHaveBeenCalledWith({ browser: { env: 'ppdtesting-', agentId: 7 } }, 0, 60_000);
+    // The session's range, widened by a minute either way for a clock that moved unannounced.
+    expect(listSessionAudio).toHaveBeenCalledWith({ browser: { env: 'ppdtesting-', agentId: 7 } }, -60_000, 120_000);
+  });
+
+  it("lists over the server's clock when the agent's computer clock is wrong", async () => {
+    // The computer is 2 h behind: its session runs 0–60 s on its clock, 2 h later on the server's.
+    const behind = { ...started, attributes: { ...started.attributes, event_data_clock_offset_ms: '7200000' } };
+    renderHook(() =>
+      useCallAudio({ journey: [behind], range: { from: 0, to: 60_000 }, clock: new PlayerClock(), enabled: true })
+    );
+
+    await waitFor(() => expect(listSessionAudio).toHaveBeenCalled());
+    expect(listSessionAudio).toHaveBeenCalledWith(
+      { browser: { env: 'ppdtesting-', agentId: 7 } },
+      -60_000,
+      7_200_000 + 120_000
+    );
   });
 
   it('asks the recorder nothing for a session of another app, or without the recorder configured', () => {

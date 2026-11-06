@@ -10,8 +10,13 @@ import type { JourneyEvent } from './journey';
  *   mic    the agent's microphone, for the whole shift (also between calls)
  *   heard  what the agent heard: the leg's remote audio as their browser played it
  *
- * Both are on the agent's computer's clock, as the replay is, so they need no
- * shifting. Nothing is taken from the carrier.
+ * The recorder files segments on the server's clock: the agent's browser
+ * corrects its computer's clock, which can be hours wrong, by the offset it
+ * measured against the dialer, and the listing says which offset each
+ * segment was corrected by. The replay runs on the computer's clock, so each
+ * segment is placed at its start minus its own offset (recorderClient).
+ * Segments listed without an offset (browsers before it was sent) are on the
+ * computer's clock already. Nothing is taken from the carrier.
  *
  * Where the audio is comes from the session's own Faro events, contract
  * "recording" v1 of the dialer (recording.started: env, agent_id). Sessions
@@ -29,7 +34,7 @@ export interface Interval {
   endMs: number;
 }
 
-/** One file of a track, on the wall clock (epoch ms). */
+/** One file of a track, on the replay's clock (the agent computer's, epoch ms). */
 export interface AudioSegment {
   key: string;
   track: CallAudioTrack;
@@ -61,6 +66,45 @@ export function audioSourcesOf(journey: JourneyEvent[]): AudioSources {
     }
   }
   return { browser };
+}
+
+/**
+ * The session's measured clock offsets (server minus the agent's computer, ms)
+ * from its recording.started and recording.clock events, in order.
+ */
+export function clockOffsetsOf(journey: JourneyEvent[]): number[] {
+  const offsets: number[] = [];
+  for (const event of journey) {
+    const a = event.attributes;
+    if (
+      (a.event_name === 'recording.started' || a.event_name === 'recording.clock') &&
+      a.event_data_recording_contract === RECORDING_CONTRACT &&
+      a.event_data_clock_offset_ms !== undefined &&
+      a.event_data_clock_offset_ms !== ''
+    ) {
+      const offset = Number(a.event_data_clock_offset_ms);
+      if (Number.isFinite(offset)) {
+        offsets.push(offset);
+      }
+    }
+  }
+  return offsets;
+}
+
+/** Most a listing is widened by beyond the session's measured offsets, for a clock that moved unannounced. */
+export const LIST_CLOCK_SLACK_MS = 60_000;
+
+/**
+ * The server-clock span to list a session's audio over: the session's range
+ * (on the computer's clock) moved by every offset it measured, and by none
+ * for segments filed before offsets were sent.
+ */
+export function listingRange(range: Interval, offsets: number[]): Interval {
+  const all = [0, ...offsets];
+  return {
+    startMs: range.startMs + Math.min(...all) - LIST_CLOCK_SLACK_MS,
+    endMs: range.endMs + Math.max(...all) + LIST_CLOCK_SLACK_MS,
+  };
 }
 
 /** The recorder's names for the tracks. */
