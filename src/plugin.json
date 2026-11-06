@@ -53,5 +53,19 @@
   "dependencies": {
     "grafanaDependency": ">=13.2.0",
     "plugins": []
-  }
+  },
+  "routes": [
+    {
+      "path": "recorder",
+      "method": "GET",
+      "reqRole": "Editor",
+      "url": "{{ .JsonData.recorderUrl }}",
+      "headers": [
+        {
+          "name": "Authorization",
+          "content": "Bearer {{ .SecureJsonData.recorderToken }}"
+        }
+      ]
+    }
+  ]
 }

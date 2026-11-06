@@ -31,16 +31,19 @@ export function pageChanges(events: eventWithTime[]): PageChange[] {
     .map((event) => ({ timestamp: event.timestamp, href: (event.data as { href?: string }).href }));
 }
 
-/** URL of the page the user was on at `timestamp` (changes sorted by time). */
+/** URL of the page the user was on at `timestamp` (changes sorted by time); asked every frame, so by binary search. */
 export function pageAt(changes: PageChange[], timestamp: number): string | undefined {
-  let href: string | undefined;
-  for (const change of changes) {
-    if (change.timestamp > timestamp) {
-      break;
+  let low = 0;
+  let high = changes.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (changes[middle].timestamp <= timestamp) {
+      low = middle + 1;
+    } else {
+      high = middle;
     }
-    href = change.href;
   }
-  return href;
+  return low === 0 ? undefined : changes[low - 1].href;
 }
 
 /**

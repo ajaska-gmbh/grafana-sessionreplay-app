@@ -56,7 +56,7 @@ export function formatOffset(ms: number): string {
 export function replayUrl(
   appName: string,
   sessionId: string,
-  options: { t?: number; from?: number; to?: number; track?: number; live?: boolean } = {}
+  options: { t?: number; from?: number; to?: number; track?: number; live?: boolean; q?: string } = {}
 ): string {
   const params = new URLSearchParams();
   if (options.t !== undefined && options.t > 0) {
@@ -73,6 +73,9 @@ export function replayUrl(
   }
   if (options.live) {
     params.set('live', '1');
+  }
+  if (options.q) {
+    params.set('q', options.q);
   }
   const query = params.toString();
   return `${PLUGIN_BASE_URL}/${ROUTES.App}/${encodeURIComponent(appName)}/session/${encodeURIComponent(sessionId)}${

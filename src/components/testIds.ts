@@ -23,6 +23,8 @@ export const testIds = {
     audioAgent: 'data-testid player-audio-agent',
     audioCustomer: 'data-testid player-audio-customer',
     audioPlayhead: 'data-testid player-audio-playhead',
+    callAudio: 'data-testid player-call-audio',
+    callAudioRow: (track: string) => `data-testid player-call-audio-${track}`,
   },
   journey: {
     container: 'data-testid journey-container',

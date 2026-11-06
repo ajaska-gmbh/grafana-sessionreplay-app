@@ -7,8 +7,12 @@ import { useSessionData } from '../../hooks/useSessionData';
 import { formatClock, replayUrl } from '../../lib/format';
 import { linkOffset } from '../../lib/playerEvents';
 import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
+import { PlayerClock } from '../../lib/playerClock';
+import { eventMatches } from '../../lib/sessionSearch';
 import type { JourneyEvent } from '../../lib/journey';
 import { UserJourney } from '../Journey/UserJourney';
+import { CallAudioTimeline } from '../Player/CallAudioTimeline';
+import { useCallAudio } from '../../hooks/useCallAudio';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
 import { testIds } from '../testIds';
 
@@ -25,9 +29,17 @@ export interface SessionReplayProps {
   live?: boolean;
   lokiUid: string;
   tempoUid: string;
+  /** Whether the call recorder is configured (app config): then the session's call audio is played with it. */
+  recorder?: boolean;
+  /** A searched value (e.g. a lead id): events carrying it in a search field are marked, the first one is jumped to. */
+  highlight?: string;
+  searchFields?: string[];
   /** Height of the player + journey area; the full-screen page fills the view. */
   height?: number | string;
 }
+
+/** The nonce of the one seek to a search match; the player's own seeks use the time. */
+const MATCH_SEEK_NONCE = 1;
 
 /** Absolute link to this session at a given offset (what "Share" copies). */
 export function shareLink(
@@ -63,7 +75,8 @@ export function SessionReplay(props: SessionReplayProps) {
   const sinceLastEventMs = data.lastReplayMs !== undefined ? now - data.lastReplayMs : undefined;
   const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;
   const [seekRequest, setSeekRequest] = useState<SeekRequest>();
-  const [playheadMs, setPlayheadMs] = useState<number>();
+  // The player's time, shared with the journey without re-rendering this view every frame.
+  const [clock] = useState(() => new PlayerClock());
   const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
 
   const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
@@ -86,6 +99,32 @@ export function SessionReplay(props: SessionReplayProps) {
       }));
   }, [data.journey, recordingStartMs]);
 
+  const { highlight, searchFields } = props;
+  const callAudio = useCallAudio({
+    journey: data.journey,
+    range: data.range,
+    clock,
+    enabled: Boolean(props.recorder),
+    live,
+  });
+  const seekTo = useCallback((offsetMs: number) => setSeekRequest({ offsetMs, nonce: Date.now() }), []);
+  const isHighlighted = useMemo(
+    () =>
+      highlight && searchFields?.length
+        ? (event: JourneyEvent) => eventMatches(event.attributes, searchFields, highlight)
+        : undefined,
+    [highlight, searchFields]
+  );
+  // A search result opens where the searched value first appears, unless the link names a time.
+  // Derived, with a fixed nonce, so the player seeks there once, however often the journey grows.
+  const matchSeek = useMemo<SeekRequest | undefined>(() => {
+    if (t !== undefined || !isHighlighted || recordingStartMs === undefined) {
+      return undefined;
+    }
+    const first = data.journey.find(isHighlighted);
+    return first ? { offsetMs: Math.max(0, first.timeMs - recordingStartMs), nonce: MATCH_SEEK_NONCE } : undefined;
+  }, [t, isHighlighted, recordingStartMs, data.journey]);
+
   const onJump = useCallback(
     (event: JourneyEvent) => {
       if (recordingStartMs !== undefined) {
@@ -94,10 +133,6 @@ export function SessionReplay(props: SessionReplayProps) {
     },
     [recordingStartMs]
   );
-
-  const onTimeChange = useCallback((offsetMs: number, startTimeMs: number) => {
-    setPlayheadMs(startTimeMs + offsetMs);
-  }, []);
 
   const onShare = useCallback(
     async (offsetMs: number) => {
@@ -143,7 +178,7 @@ export function SessionReplay(props: SessionReplayProps) {
               value={track}
               onChange={(value) => {
                 setSelectedTrack(value);
-                setPlayheadMs(undefined);
+                clock.update({ offsetMs: 0, totalMs: 0, startTimeMs: undefined });
               }}
             />
           </div>
@@ -173,10 +208,13 @@ export function SessionReplay(props: SessionReplayProps) {
             key={`${track}-${live ? 'live' : 'replay'}`}
             events={events}
             initialOffsetMs={initialOffsetMs}
-            seekRequest={seekRequest}
+            seekRequest={seekRequest ?? matchSeek}
             markers={markers}
             audioLevels={data.audioLevels}
-            onTimeChange={onTimeChange}
+            clock={clock}
+            belowTimeline={
+              callAudio.available ? <CallAudioTimeline audio={callAudio} clock={clock} onSeek={seekTo} /> : undefined
+            }
             onShare={onShare}
             live={live}
             liveReceivedAtMs={data.lastReplayMs}
@@ -206,7 +244,8 @@ export function SessionReplay(props: SessionReplayProps) {
         <UserJourney
           events={data.journey}
           recordingStartMs={recordingStartMs}
-          playheadMs={playheadMs}
+          clock={clock}
+          isHighlighted={isHighlighted}
           loading={data.loadingJourney}
           tempoUid={tempoUid}
           onJump={onJump}

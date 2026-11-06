@@ -19,6 +19,7 @@ import {
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
 import { liveStartIndex, pageAt, pageChanges } from '../../lib/playerEvents';
+import { PlayerClock, useClockEffect, useClockValue } from '../../lib/playerClock';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
 
@@ -50,7 +51,10 @@ export interface ReplayPlayerProps {
   markers?: TimelineMarker[];
   /** The dialer's per-second audio levels, drawn under the timeline (epoch ms). */
   audioLevels?: AudioLevelWindow[];
-  onTimeChange?: (offsetMs: number, startTimeMs: number) => void;
+  /** Where the player writes its time; others (journey, call audio) follow it. One of its own when not given. */
+  clock?: PlayerClock;
+  /** More rows on the timeline's axis, under the level graph (the call audio); they follow `clock`. */
+  belowTimeline?: React.ReactNode;
   onShare?: (offsetMs: number) => Promise<void> | void;
   autoPlay?: boolean;
   /**
@@ -79,7 +83,8 @@ export function ReplayPlayer({
   seekRequest,
   markers = [],
   audioLevels = [],
-  onTimeChange,
+  clock: givenClock,
+  belowTimeline,
   onShare,
   autoPlay = false,
   live = false,
@@ -95,16 +100,23 @@ export function ReplayPlayer({
   const addedRef = useRef<WeakSet<eventWithTime>>(new WeakSet());
   const viewportRef = useRef<{ width: number; height: number } | null>(null);
   const frameRef = useRef<number | null>(null);
+  const rangeRef = useRef<HTMLInputElement>(null);
+  const [ownClock] = useState(() => new PlayerClock());
+  const clock = givenClock ?? ownClock;
 
   const [playing, setPlaying] = useState(false);
   // Read by the effect that appends events, which must not re-run on play/pause.
   const playingRef = useRef(false);
   useEffect(() => {
     playingRef.current = playing;
-  }, [playing]);
-  const [offset, setOffset] = useState(0);
-  const [total, setTotal] = useState(0);
-  const [startTime, setStartTime] = useState<number>();
+    clock.update({ playing });
+  }, [playing, clock]);
+  // Only what is shown re-renders: the whole second, the length, the start. The
+  // range input follows every frame through its ref (see the clock effect below).
+  const second = useClockValue(clock, (state) => Math.floor(state.offsetMs / 1000));
+  const total = useClockValue(clock, (state) => state.totalMs);
+  const startTime = useClockValue(clock, (state) => state.startTimeMs);
+  const offset = second * 1000;
   /** The "go to" field: what is typed, and whether the last attempt failed. */
   const [goTo, setGoTo] = useState('');
   const [goToInvalid, setGoToInvalid] = useState(false);
@@ -150,21 +162,25 @@ export function ReplayPlayer({
     }
     const meta = replayer.getMetaData();
     const current = Math.min(replayer.getCurrentTime(), meta.totalTime);
-    setOffset(current);
-    setTotal(meta.totalTime);
-    setStartTime(meta.startTime);
-    onTimeChange?.(current, meta.startTime);
+    clock.update({ offsetMs: current, totalMs: meta.totalTime, startTimeMs: meta.startTime });
     if (live) {
       // Playback trails the newest event (buffer), which itself arrived some time ago.
       const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
       const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;
-      setLiveLagMs(behindNewest + sinceReceived);
+      const lag = behindNewest + sinceReceived;
+      setLiveLagMs((previous) => (Math.round(previous / 1000) === Math.round(lag / 1000) ? previous : lag));
     }
-    setPage({
-      url: pageAt(pages, meta.startTime + current),
-      title: replayer.iframe.contentDocument?.title || undefined,
-    });
-  }, [pages, onTimeChange, live]);
+    const url = pageAt(pages, meta.startTime + current);
+    const title = replayer.iframe.contentDocument?.title || undefined;
+    setPage((previous) => (previous.url === url && previous.title === title ? previous : { url, title }));
+  }, [pages, live, clock]);
+
+  // The timeline's thumb follows every frame without re-rendering the player.
+  useClockEffect(clock, (state) => {
+    if (rangeRef.current) {
+      rangeRef.current.value = String(Math.min(state.offsetMs, state.totalMs));
+    }
+  });
 
   // Replayer callbacks are registered once; they read the latest sync via this ref.
   const syncRef = useRef(syncTime);
@@ -263,8 +279,14 @@ export function ReplayPlayer({
         viewportRef.current = dimension as { width: number; height: number };
         rescale();
       });
-      replayer.on('skip-start', () => setSkipping(true));
-      replayer.on('skip-end', () => setSkipping(false));
+      replayer.on('skip-start', () => {
+        setSkipping(true);
+        clock.update({ skipping: true });
+      });
+      replayer.on('skip-end', () => {
+        setSkipping(false);
+        clock.update({ skipping: false });
+      });
 
       const start = Math.max(0, initialOffsetMs);
       if (autoPlay) {
@@ -377,6 +399,7 @@ export function ReplayPlayer({
 
   const changeSpeed = (value: number) => {
     setSpeed(value);
+    clock.update({ speed: value });
     replayerRef.current?.setConfig({ speed: value });
   };
 
@@ -452,13 +475,14 @@ export function ReplayPlayer({
         <>
           <div className={styles.timeline}>
             <input
+              ref={rangeRef}
               type="range"
               aria-label="Timeline"
               className={styles.range}
               min={0}
               max={Math.max(total, 1)}
               step={100}
-              value={Math.min(offset, total)}
+              defaultValue={0}
               onChange={(event) => seek(Number(event.currentTarget.value))}
               data-testid={testIds.player.timeline}
             />
@@ -484,12 +508,13 @@ export function ReplayPlayer({
                 <AudioLevelTimeline
                   segments={audioSegments}
                   totalMs={total}
-                  offsetMs={offset}
+                  clock={clock}
                   startTimeMs={startTime}
                   onSeek={seek}
                 />
               </div>
             )}
+            {belowTimeline && total > 0 && <div className={styles.graphTrack}>{belowTimeline}</div>}
           </div>
 
           <div className={styles.controls}>
@@ -503,7 +528,11 @@ export function ReplayPlayer({
                 </span>
               </Tooltip>
             )}
-            <IconButton name="backward" tooltip="Skip backward 10 seconds" onClick={() => seek(offset - SKIP_MS)} />
+            <IconButton
+              name="backward"
+              tooltip="Skip backward 10 seconds"
+              onClick={() => seek(clock.get().offsetMs - SKIP_MS)}
+            />
             <IconButton
               name={playing ? 'pause' : 'play'}
               size="xl"
@@ -511,7 +540,11 @@ export function ReplayPlayer({
               onClick={togglePlay}
               data-testid={testIds.player.play}
             />
-            <IconButton name="forward" tooltip="Skip forward 10 seconds" onClick={() => seek(offset + SKIP_MS)} />
+            <IconButton
+              name="forward"
+              tooltip="Skip forward 10 seconds"
+              onClick={() => seek(clock.get().offsetMs + SKIP_MS)}
+            />
             {startTime !== undefined && (
               <Tooltip
                 content={
@@ -567,7 +600,7 @@ export function ReplayPlayer({
                 icon="share-alt"
                 variant="canvas"
                 tooltip="Copy a link to this moment"
-                onClick={() => onShare(offset)}
+                onClick={() => onShare(clock.get().offsetMs)}
               >
                 Share
               </ToolbarButton>

@@ -1,8 +1,9 @@
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { byStart, parseAudioLevelLine, type AudioLevelWindow } from './audioLevels';
-import { buildJourney, type JourneyEvent } from './journey';
+import { byTime, toJourneyEvent, type JourneyEvent } from './journey';
 import { compareNs } from './loki';
-import { decodeReplayLines, mergeReplayEvents, type DecodedReplayEvent } from './replayEvents';
+import { decodeReplayLines, ReplayRecordings } from './replayEvents';
+import { mergeSorted } from './sorted';
 import { StylesheetResolver } from './stylesheetRefs';
 import type { LokiLine } from '../types';
 
@@ -15,9 +16,11 @@ export const LIVE_WINDOW_MS = 2 * 60 * 1000;
  * duplicates are dropped. Cursors remember where the next poll starts.
  */
 export class SessionStore {
-  private readonly known = new Map<string, DecodedReplayEvent>();
+  private readonly recordings = new ReplayRecordings();
   private readonly stylesheets = new StylesheetResolver();
-  private readonly journeyLines = new Map<string, LokiLine>();
+  /** Keys of the journey lines seen, and ids of the events they gave; only new lines are parsed. */
+  private readonly journeyLineKeys = new Set<string>();
+  private readonly journeyIds = new Set<string>();
   /** Keys of the level lines seen; only new lines are parsed. */
   private readonly audioLevelKeys = new Set<string>();
   private replayCursorNs?: string;
@@ -46,10 +49,10 @@ export class SessionStore {
     this.skipped += skipped;
     // Only events not loaded before; pages overlap. Resolved in place, before
     // the player sees them (it appends events by identity).
-    this.stylesheets.addEvents(decoded.filter((entry) => !this.known.has(entry.key)).map((entry) => entry.event));
+    this.stylesheets.addEvents(decoded.filter((entry) => !this.recordings.has(entry.key)).map((entry) => entry.event));
     this.unresolvedStylesheets = this.stylesheets.unresolved;
     this.droppedStylesheets = this.stylesheets.droppedTexts;
-    this.tracks = mergeReplayEvents(this.known, decoded);
+    this.tracks = this.recordings.add(decoded);
     this.replayCursorNs = maxNs(this.replayCursorNs, lines);
     this.lastReplayMs = this.replayCursorNs ? nsToMs(this.replayCursorNs) : undefined;
   }
@@ -58,16 +61,22 @@ export class SessionStore {
     if (lines.length === 0) {
       return;
     }
-    let added = false;
+    const added: JourneyEvent[] = [];
     for (const entry of lines) {
       const key = `${entry.tsNs}\u0000${entry.line}`;
-      if (!this.journeyLines.has(key)) {
-        this.journeyLines.set(key, entry);
-        added = true;
+      if (this.journeyLineKeys.has(key)) {
+        continue;
+      }
+      this.journeyLineKeys.add(key);
+      const event = toJourneyEvent(entry.tsNs, entry.line, this.sessionId);
+      if (event && !this.journeyIds.has(event.id)) {
+        this.journeyIds.add(event.id);
+        added.push(event);
       }
     }
-    if (added) {
-      this.journey = buildJourney(this.journeyLines.values(), this.sessionId);
+    if (added.length > 0) {
+      // A new array, so React sees the change; earlier lines are not parsed or sorted again.
+      this.journey = mergeSorted(this.journey, added.sort(byTime), byTime);
     }
     this.journeyCursorNs = maxNs(this.journeyCursorNs, lines);
   }
@@ -94,8 +103,8 @@ export class SessionStore {
       }
     }
     if (added.length > 0) {
-      // A new array, so React sees the change; earlier windows are not parsed again.
-      this.audioLevels = [...this.audioLevels, ...added].sort(byStart);
+      // A new array, so React sees the change; earlier windows are not parsed or sorted again.
+      this.audioLevels = mergeSorted(this.audioLevels, added.sort(byStart), byStart);
     }
     this.audioLevelCursorNs = maxNs(this.audioLevelCursorNs, lines);
   }
