@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- Call audio plays: the recorder route matches the paths under it (Grafana 13 matches plugin routes as patterns, so `recorder` alone answered "plugin route match not found" for every listing and file).
+
 ## 0.5.1
 
 - Call audio where the agent's computer clock is wrong (it can be hours off): segments are filed on the server's clock with the offset they were corrected by, and placed back on the replay by it; the listing covers the session's measured offsets.
