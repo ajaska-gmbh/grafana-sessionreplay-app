@@ -30,6 +30,36 @@ describe('recorder client', () => {
     expect(Object.keys(audio).sort()).toEqual(['heard', 'mic']);
   });
 
+  it("places each segment on the agent computer's clock by its own offset", async () => {
+    const fetch = jest.fn(() =>
+      of({
+        data: {
+          segments: [
+            // Filed on the server's clock by a computer 2 h behind.
+            {
+              key: 'new',
+              source: 'browser',
+              track: 'mic',
+              start_ms: 7_210_000,
+              duration_ms: 10000,
+              clock_offset_ms: 7_200_000,
+            },
+            // Filed before browsers sent the offset: already on the computer's clock.
+            { key: 'old', source: 'browser', track: 'mic', start_ms: 0, duration_ms: 10000 },
+          ],
+        },
+      })
+    );
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+
+    const audio = await listSessionAudio({ browser: { env: 'e', agentId: 7 } }, 0, 3600_000 * 3);
+
+    expect(audio.mic.map((s) => [s.key, s.startMs])).toEqual([
+      ['old', 0],
+      ['new', 10_000],
+    ]);
+  });
+
   it('asks for nothing without a browser recording', async () => {
     const fetch = jest.fn(() => of({ data: { segments: [] } }));
     (getBackendSrv as jest.Mock).mockReturnValue({ fetch });

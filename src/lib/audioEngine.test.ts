@@ -71,6 +71,7 @@ const clock = (patch: Partial<ClockState>): ClockState => ({
   offsetMs: 0,
   totalMs: 600_000,
   startTimeMs: 1_000_000,
+  clockOffsetMs: 0,
   playing: true,
   speed: 1,
   skipping: false,

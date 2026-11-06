@@ -44,6 +44,7 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
   const speed = useClockValue(clock, (state) => state.speed);
   const totalMs = useClockValue(clock, (state) => state.totalMs);
   const startTimeMs = useClockValue(clock, (state) => state.startTimeMs);
+  const clockOffsetMs = useClockValue(clock, (state) => state.clockOffsetMs);
   useClockEffect(clock, (state) => {
     if (playheadRef.current && totalMs > 0) {
       playheadRef.current.style.left = `${(Math.min(totalMs, Math.max(0, state.offsetMs)) / totalMs) * 100}%`;
@@ -84,7 +85,9 @@ export function CallAudioTimeline({ audio, clock, onSeek }: CallAudioTimelinePro
         />
       ) : null;
     });
-  const span = (i: Interval) => `${formatWallClock(i.startMs)}–${formatWallClock(i.endMs)}`;
+  // Times of day on the server's clock, as everywhere in the player.
+  const span = (i: Interval) =>
+    `${formatWallClock(i.startMs + clockOffsetMs)}–${formatWallClock(i.endMs + clockOffsetMs)}`;
   const seekAt = (event: React.MouseEvent<HTMLDivElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
     onSeek(((event.clientX - box.left) / box.width) * totalMs);

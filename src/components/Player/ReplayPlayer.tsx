@@ -116,6 +116,9 @@ export function ReplayPlayer({
   const second = useClockValue(clock, (state) => Math.floor(state.offsetMs / 1000));
   const total = useClockValue(clock, (state) => state.totalMs);
   const startTime = useClockValue(clock, (state) => state.startTimeMs);
+  const clockOffset = useClockValue(clock, (state) => state.clockOffsetMs);
+  /** The recording start on the server's clock: every time of day shown or typed counts from it. */
+  const startTimeOfDay = startTime === undefined ? undefined : startTime + clockOffset;
   const offset = second * 1000;
   /** The "go to" field: what is typed, and whether the last attempt failed. */
   const [goTo, setGoTo] = useState('');
@@ -448,7 +451,7 @@ export function ReplayPlayer({
           <Badge text="LIVE" color="red" icon="circle-mono" />
           {startTime !== undefined && (
             <span className={styles.wallClock} data-testid={testIds.player.wallClock}>
-              {formatWallClock(startTime + offset)}
+              {formatWallClock(startTime + clockOffset + offset)}
             </span>
           )}
           <span className={styles.clock} data-testid={testIds.player.clock}>
@@ -509,7 +512,7 @@ export function ReplayPlayer({
                   segments={audioSegments}
                   totalMs={total}
                   clock={clock}
-                  startTimeMs={startTime}
+                  startTimeMs={startTimeOfDay}
                   onSeek={seek}
                 />
               </div>
@@ -524,7 +527,7 @@ export function ReplayPlayer({
             {startTime !== undefined && (
               <Tooltip content="Time of day at the playhead (your time zone)">
                 <span className={styles.wallClock} data-testid={testIds.player.wallClock}>
-                  {formatWallClock(startTime + offset)}
+                  {formatWallClock(startTime + clockOffset + offset)}
                 </span>
               </Tooltip>
             )}
@@ -549,7 +552,7 @@ export function ReplayPlayer({
               <Tooltip
                 content={
                   goToInvalid
-                    ? `Not a time in this recording (${formatWallClock(startTime)}–${formatWallClock(startTime + total)})`
+                    ? `Not a time in this recording (${formatWallClock(startTime + clockOffset)}–${formatWallClock(startTime + clockOffset + total)})`
                     : 'Jump to a time of day: hh:mm or hh:mm:ss, then Enter'
                 }
               >
@@ -569,7 +572,7 @@ export function ReplayPlayer({
                       if (event.key !== 'Enter') {
                         return;
                       }
-                      const target = wallClockOffset(goTo, startTime, total);
+                      const target = wallClockOffset(goTo, startTime + clockOffset, total);
                       if (target === undefined) {
                         setGoToInvalid(true);
                         return;

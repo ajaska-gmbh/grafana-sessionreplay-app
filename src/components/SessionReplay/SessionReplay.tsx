@@ -10,6 +10,7 @@ import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
 import { PlayerClock } from '../../lib/playerClock';
 import { eventMatches } from '../../lib/sessionSearch';
 import type { JourneyEvent } from '../../lib/journey';
+import { clockOffsetsOf } from '../../lib/callAudio';
 import { UserJourney } from '../Journey/UserJourney';
 import { CallAudioTimeline } from '../Player/CallAudioTimeline';
 import { useCallAudio } from '../../hooks/useCallAudio';
@@ -98,6 +99,10 @@ export function SessionReplay(props: SessionReplayProps) {
         title: event.title,
       }));
   }, [data.journey, recordingStartMs]);
+
+  // Times of day are shown on the server's clock: the last offset the agent's computer measured.
+  const clockOffsetMs = useMemo(() => clockOffsetsOf(data.journey).at(-1) ?? 0, [data.journey]);
+  useEffect(() => clock.update({ clockOffsetMs }), [clock, clockOffsetMs]);
 
   const { highlight, searchFields } = props;
   const callAudio = useCallAudio({

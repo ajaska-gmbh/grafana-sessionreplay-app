@@ -6,15 +6,21 @@ export interface ClockState {
   offsetMs: number;
   /** Length of the recording so far, ms. */
   totalMs: number;
-  /** Epoch ms of the recording start, once known. */
+  /** Epoch ms of the recording start, once known (the recording computer's clock). */
   startTimeMs?: number;
+  /**
+   * The server's clock minus the recording computer's (the dialer measures
+   * it): added to every time of day shown or typed, so they match the
+   * dialer's and the CRM's times even where the computer's clock is wrong.
+   */
+  clockOffsetMs: number;
   playing: boolean;
   speed: number;
   /** rrweb is fast-forwarding through inactivity ("Skip inactivity"): the playhead jumps. */
   skipping: boolean;
 }
 
-const INITIAL: ClockState = { offsetMs: 0, totalMs: 0, playing: false, speed: 1, skipping: false };
+const INITIAL: ClockState = { offsetMs: 0, totalMs: 0, clockOffsetMs: 0, playing: false, speed: 1, skipping: false };
 
 /**
  * The player's time, outside React. The player writes it every frame; React

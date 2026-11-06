@@ -1,7 +1,10 @@
 import type { JourneyEvent } from './journey';
 import {
   audioSourcesOf,
+  clockOffsetsOf,
   coverage,
+  listingRange,
+  LIST_CLOCK_SLACK_MS,
   missing,
   segmentAt,
   subtract,
@@ -26,6 +29,39 @@ const seg = (track: CallAudioTrack, startMs: number, durationMs: number): AudioS
 });
 
 describe('call audio', () => {
+  it("reads the agent computer's measured clock offsets, in order", () => {
+    const offsets = clockOffsetsOf([
+      event({
+        event_name: 'recording.started',
+        event_data_recording_contract: 'v1',
+        event_data_clock_offset_ms: '-7200000',
+      }),
+      event({
+        event_name: 'recording.clock',
+        event_data_recording_contract: 'v1',
+        event_data_clock_offset_ms: '-7195000',
+      }),
+      event({ event_name: 'recording.clock', event_data_recording_contract: 'v1', event_data_clock_offset_ms: 'x' }),
+      event({ event_name: 'recording.started', event_data_recording_contract: 'v9', event_data_clock_offset_ms: '5' }),
+      event({ event_name: 'recording.started', event_data_recording_contract: 'v1' }),
+    ]);
+
+    expect(offsets).toEqual([-7_200_000, -7_195_000]);
+  });
+
+  it("lists over the server's clock: the session moved by each offset, and by none for older segments", () => {
+    const range = { startMs: 1_000_000, endMs: 2_000_000 };
+
+    expect(listingRange(range, [])).toEqual({
+      startMs: 1_000_000 - LIST_CLOCK_SLACK_MS,
+      endMs: 2_000_000 + LIST_CLOCK_SLACK_MS,
+    });
+    expect(listingRange(range, [-7_200_000, 3_000])).toEqual({
+      startMs: 1_000_000 - 7_200_000 - LIST_CLOCK_SLACK_MS,
+      endMs: 2_000_000 + 3_000 + LIST_CLOCK_SLACK_MS,
+    });
+  });
+
   it('reads where the audio is from the recording events (contract v1)', () => {
     const sources = audioSourcesOf([
       event({
