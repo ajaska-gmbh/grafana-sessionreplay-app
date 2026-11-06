@@ -4,7 +4,15 @@ import { of } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
 import { fetchSegmentAudio, listSessionAudio } from './recorderClient';
 
+import plugin from '../plugin.json';
+
 describe('recorder client', () => {
+  it("is served by the plugin's recorder route, which must match every path under it", () => {
+    // Grafana matches route paths as patterns: "recorder" alone matches only /recorder itself.
+    const route = (plugin as { routes?: Array<{ path: string }> }).routes?.find((r) => r.path.startsWith('recorder'));
+    expect(route?.path).toBe('recorder/*');
+  });
+
   it("lists the agent's browser segments through the plugin route, by track, sorted", async () => {
     const fetch = jest.fn(() =>
       of({

@@ -56,7 +56,7 @@
   },
   "routes": [
     {
-      "path": "recorder",
+      "path": "recorder/*",
       "method": "GET",
       "reqRole": "Editor",
       "url": "{{ .JsonData.recorderUrl }}",

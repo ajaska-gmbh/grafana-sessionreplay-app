@@ -117,7 +117,7 @@ Without search fields the list is searched as before, in the browser.
 
 **Call audio** (optional): the call recorder's read API URL (one for every
 dialer environment, e.g. `http://call-recorder.call-recorder.svc:8081`) and its
-read token (kept encrypted). The `recorder` plugin route (GET only, Editor)
+read token (kept encrypted). The `recorder/*` plugin route (GET only, Editor)
 adds the token on Grafana's side. A session plays the audio its own
 `recording` v1 events point to:
 
