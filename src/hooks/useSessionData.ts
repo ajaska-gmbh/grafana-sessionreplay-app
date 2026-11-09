@@ -3,7 +3,8 @@ import type { eventWithTime } from '@grafana/rrweb-types';
 import { CLOCK_SLACK_MS, MAX_SESSION_MS, REPLAY_PAGE_SIZE } from '../constants';
 import type { JourneyEvent } from '../lib/journey';
 import { createLokiFetcher, readForward, type LokiFetcher } from '../lib/loki';
-import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
+import { eventLineFilter, sessionLineFilter, sessionPayloads, STREAMS } from '../lib/logql';
+import type { PayloadBuckets } from '../lib/sessionBucket';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import { SessionStore } from '../lib/sessionStore';
 import { journeyQuery } from '../lib/journeyQuery';
@@ -96,10 +97,16 @@ export function useSessionData(params: {
   from?: number;
   to?: number;
   live?: boolean;
+  /** Where the payload stream is split by session (app config); none: read the whole stream. */
+  payloadBuckets?: PayloadBuckets;
 }): SessionDataState {
-  const { lokiUid, sessionId, from, to, live = false } = params;
+  const { lokiUid, sessionId, from, to, live = false, payloadBuckets } = params;
+  const bucketCount = payloadBuckets?.count;
+  const bucketsSinceMs = payloadBuckets?.sinceMs;
   const fetcher = useMemo(() => createLokiFetcher(lokiUid), [lokiUid]);
   const storeRef = useRef<SessionStore | null>(null);
+  /** The payload selector the initial load settled on; live mode polls the same. */
+  const payloadStreamRef = useRef<string>(STREAMS.payloads);
   const [state, setState] = useState<SessionDataState>({
     tracks: [],
     journey: [],
@@ -153,13 +160,38 @@ export function useSessionData(params: {
       update({ range, session });
 
       const replay = (async () => {
-        const expr = STREAMS.payloads + sessionLineFilter(sessionId);
-        for await (const page of readForward(fetcher, expr, range.from, range.to, REPLAY_PAGE_SIZE)) {
+        const buckets =
+          bucketCount !== undefined && bucketsSinceMs !== undefined
+            ? { count: bucketCount, sinceMs: bucketsSinceMs }
+            : undefined;
+        const readPayloads = async (stream: string): Promise<number> => {
+          // A cancelled run (the session changed meanwhile) must not set the new one's live selector.
           if (cancelled) {
-            return;
+            return 0;
           }
-          store.addReplayLines(page);
-          publish();
+          payloadStreamRef.current = stream;
+          let lines = 0;
+          for await (const page of readForward(
+            fetcher,
+            stream + sessionLineFilter(sessionId),
+            range.from,
+            range.to,
+            REPLAY_PAGE_SIZE
+          )) {
+            if (cancelled) {
+              return lines;
+            }
+            lines += page.length;
+            store.addReplayLines(page);
+            publish();
+          }
+          return lines;
+        };
+        const stream = sessionPayloads(sessionId, range.from, buckets);
+        // Nothing in the bucket: a session from before the pipeline labelled
+        // buckets, seen through an agent clock running ahead. Read it whole.
+        if ((await readPayloads(stream)) === 0 && stream !== STREAMS.payloads && !cancelled) {
+          await readPayloads(STREAMS.payloads);
         }
         update({ loadingReplay: false });
       })();
@@ -200,7 +232,7 @@ export function useSessionData(params: {
     return () => {
       cancelled = true;
     };
-  }, [fetcher, sessionId, from, to]);
+  }, [fetcher, sessionId, from, to, bucketCount, bucketsSinceMs]);
 
   // Live mode: after the initial load, fetch what arrived since the cursors.
   const initialDone = !state.loadingReplay && !state.loadingJourney;
@@ -215,7 +247,7 @@ export function useSessionData(params: {
     const poll = async () => {
       const nowMs = Date.now();
       const fallbackMs = nowMs - LIVE_POLL_MS * 2;
-      const replayExpr = STREAMS.payloads + sessionLineFilter(sessionId);
+      const replayExpr = payloadStreamRef.current + sessionLineFilter(sessionId);
       const journeyExpr = journeyQuery(sessionId);
       try {
         for await (const page of readForward(

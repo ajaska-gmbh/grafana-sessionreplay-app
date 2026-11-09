@@ -25,7 +25,7 @@ export type ReplayPlayerV1Props = Pick<
 
 /** Embeddable player + user journey, like grafana-sessionreplay-app/replay-player/v1. */
 function ReplayPlayerV1(props: ReplayPlayerV1Props) {
-  const { lokiUid, tempoUid, recorder } = useSettings();
+  const { lokiUid, tempoUid, recorder, payloadBuckets } = useSettings();
   return (
     <Suspense fallback={<LoadingPlaceholder text="Loading recording…" />}>
       <LazySessionReplay
@@ -35,6 +35,7 @@ function ReplayPlayerV1(props: ReplayPlayerV1Props) {
         lokiUid={lokiUid}
         tempoUid={tempoUid}
         recorder={recorder}
+        payloadBuckets={payloadBuckets}
       />
     </Suspense>
   );
