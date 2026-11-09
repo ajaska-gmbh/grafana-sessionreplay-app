@@ -37,6 +37,9 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
             tempoUid,
             searchFields: validSearchFields(searchFields),
             recorderUrl: recorderUrl.trim() || undefined,
+            // Provisioned with the Alloy pipeline (kubernetes-configs), not edited here: kept as they are.
+            payloadBuckets: jsonData?.payloadBuckets,
+            payloadBucketsSince: jsonData?.payloadBucketsSince,
           },
           secureJsonData,
         });

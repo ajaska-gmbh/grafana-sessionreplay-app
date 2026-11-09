@@ -1,4 +1,5 @@
 import { logqlString } from './loki';
+import { sessionBucket, type PayloadBuckets } from './sessionBucket';
 
 /**
  * The Loki streams written by the Alloy Faro pipeline. They are a fixed set:
@@ -13,6 +14,18 @@ export const STREAMS = {
   /** rrweb events (DOM snapshots can be several MB). */
   payloads: '{source="faro_replay", replay="payload"}',
 } as const;
+
+/**
+ * The payload stream of one session: its bucket where the session started
+ * after the pipeline began labelling buckets, else the whole stream (which
+ * also matches bucketed streams).
+ */
+export function sessionPayloads(sessionId: string, fromMs: number, buckets?: PayloadBuckets): string {
+  if (!buckets || fromMs < buckets.sinceMs) {
+    return STREAMS.payloads;
+  }
+  return `{source="faro_replay", replay="payload", session_bucket="${sessionBucket(sessionId, buckets.count)}"}`;
+}
 
 /** Escape a value for use inside a RE2 alternative. */
 export function regexEscape(value: string): string {

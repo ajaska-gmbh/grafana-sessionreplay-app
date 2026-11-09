@@ -21,7 +21,7 @@ function ReplayPage() {
   const styles = useStyles2(getStyles);
   const { appName = '', sessionId = '' } = useParams();
   const [searchParams] = useSearchParams();
-  const { lokiUid, tempoUid, searchFields, recorder } = useSettings();
+  const { lokiUid, tempoUid, searchFields, recorder, payloadBuckets } = useSettings();
   const from = numberParam(searchParams.get('from'));
   const to = numberParam(searchParams.get('to'));
 
@@ -47,6 +47,7 @@ function ReplayPage() {
           highlight={searchParams.get('q') ?? undefined}
           searchFields={searchFields}
           recorder={recorder}
+          payloadBuckets={payloadBuckets}
           lokiUid={lokiUid}
           tempoUid={tempoUid}
         />

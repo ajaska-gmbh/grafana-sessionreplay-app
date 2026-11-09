@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3
+
+- Long replays load much faster: sessions recorded after the Alloy pipeline labels the payload stream by session bucket (`session_bucket`, adler32(session_id) % 256) read only their own bucket, about 1/256 of all sessions' payload, instead of all of it. Configured by `payloadBuckets` / `payloadBucketsSince` (provisioned with the pipeline); older sessions, and a bucket without the session, read the whole stream as before.
+
 ## 0.5.2
 
 - Call audio plays: the recorder route matches the paths under it (Grafana 13 matches plugin routes as patterns, so `recorder` alone answered "plugin route match not found" for every listing and file).

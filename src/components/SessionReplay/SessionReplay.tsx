@@ -14,6 +14,7 @@ import { clockOffsetsOf } from '../../lib/callAudio';
 import { UserJourney } from '../Journey/UserJourney';
 import { CallAudioTimeline } from '../Player/CallAudioTimeline';
 import { useCallAudio } from '../../hooks/useCallAudio';
+import type { PayloadBuckets } from '../../lib/sessionBucket';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
 import { testIds } from '../testIds';
 
@@ -35,6 +36,8 @@ export interface SessionReplayProps {
   /** A searched value (e.g. a lead id): events carrying it in a search field are marked, the first one is jumped to. */
   highlight?: string;
   searchFields?: string[];
+  /** Where the replay payload stream is split by session (app config). */
+  payloadBuckets?: PayloadBuckets;
   /** Height of the player + journey area; the full-screen page fills the view. */
   height?: number | string;
 }
@@ -71,7 +74,7 @@ export function SessionReplay(props: SessionReplayProps) {
   const { appName, sessionId, from, to, t, lokiUid, tempoUid, height = '100%' } = props;
   const styles = useStyles2(getStyles);
   const [live, setLive] = useState(props.live ?? false);
-  const data = useSessionData({ lokiUid, sessionId, from, to, live });
+  const data = useSessionData({ lokiUid, sessionId, from, to, live, payloadBuckets: props.payloadBuckets });
   const now = useNow();
   const sinceLastEventMs = data.lastReplayMs !== undefined ? now - data.lastReplayMs : undefined;
   const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;

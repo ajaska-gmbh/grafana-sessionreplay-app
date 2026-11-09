@@ -115,6 +115,16 @@ marks those events and opens at the first one. The sessions page keeps search,
 apps and range in the URL (`?q=&apps=&lookback=`), so a link can open a search.
 Without search fields the list is searched as before, in the browser.
 
+**Payload buckets** (optional, provisioned only: `jsonData.payloadBuckets`,
+`jsonData.payloadBucketsSince`): where the Alloy Faro pipeline labels replay
+payload lines `session_bucket="<adler32(session_id) % payloadBuckets, 3 digits>"`,
+a replay of a session that started at or after `payloadBucketsSince` (ISO time;
+set it about an hour after the pipeline started labelling, for agent clocks
+running ahead) reads only its bucket instead of every session's payload. The
+bucket computation is `src/lib/sessionBucket.ts`; its test vectors must match the
+pipeline's (kubernetes-configs `monitoring-new/README.md`). Older sessions, and a
+bucket holding nothing of the session, are read from the whole stream.
+
 **Call audio** (optional): the call recorder's read API URL (one for every
 dialer environment, e.g. `http://call-recorder.call-recorder.svc:8081`) and its
 read token (kept encrypted). The `recorder/*` plugin route (GET only, Editor)
