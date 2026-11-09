@@ -24,15 +24,8 @@ export interface PageChange {
   href?: string;
 }
 
-/** Page loads in the recording: every Meta event carries the page URL. */
-export function pageChanges(events: eventWithTime[]): PageChange[] {
-  return events
-    .filter((event) => event.type === RRWEB_META)
-    .map((event) => ({ timestamp: event.timestamp, href: (event.data as { href?: string }).href }));
-}
-
 /** URL of the page the user was on at `timestamp` (changes sorted by time); asked every frame, so by binary search. */
-export function pageAt(changes: PageChange[], timestamp: number): string | undefined {
+export function pageAt(changes: readonly PageChange[], timestamp: number): string | undefined {
   let low = 0;
   let high = changes.length;
   while (low < high) {
@@ -49,16 +42,17 @@ export function pageAt(changes: PageChange[], timestamp: number): string | undef
 /**
  * Playback offset for a link's `t`. `t` counts from the first event the link's
  * own range would have played: the first Meta (page load or checkout) at or
- * after `linkFromMs`. When loading started earlier (see loadRange), that point
- * is found in the loaded events. Undefined while it is not loaded yet.
+ * after `linkFromMs`. Loading starts at the session start (see loadRange), so
+ * that point is found among the track's Metas, all known from the index.
  */
-export function linkOffset(events: eventWithTime[], linkFromMs: number | undefined, t = 0): number | undefined {
-  if (events.length === 0) {
-    return undefined;
-  }
-  if (linkFromMs === undefined || events[0].timestamp >= linkFromMs) {
+export function linkOffset(
+  track: { startMs: number; pages: ReadonlyArray<{ timestamp: number }> },
+  linkFromMs: number | undefined,
+  t = 0
+): number {
+  if (linkFromMs === undefined || track.startMs >= linkFromMs) {
     return t;
   }
-  const anchor = events.find((event) => event.type === RRWEB_META && event.timestamp >= linkFromMs);
-  return anchor ? anchor.timestamp - events[0].timestamp + t : undefined;
+  const anchor = track.pages.find((page) => page.timestamp >= linkFromMs);
+  return anchor ? anchor.timestamp - track.startMs + t : t;
 }

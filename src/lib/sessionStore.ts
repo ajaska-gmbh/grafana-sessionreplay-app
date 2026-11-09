@@ -1,23 +1,23 @@
-import type { eventWithTime } from '@grafana/rrweb-types';
 import { byStart, parseAudioLevelLine, type AudioLevelWindow } from './audioLevels';
 import { byTime, toJourneyEvent, type JourneyEvent } from './journey';
 import { compareNs } from './loki';
-import { decodeReplayLines, ReplayRecordings } from './replayEvents';
+import { decodeReplayLines, ReplayTimeline, type ReplayTrack } from './replayEvents';
+import type { ReplayIndex } from './replaySource';
 import { mergeSorted } from './sorted';
-import { StylesheetResolver } from './stylesheetRefs';
 import type { LokiLine } from '../types';
 
 /** A session counts as live while its recording received data this recently. */
 export const LIVE_WINDOW_MS = 2 * 60 * 1000;
 
 /**
- * Everything loaded for one session, fed page by page — first the initial
- * load, then (in live mode) the newest lines on every poll. Pages may overlap;
+ * Everything loaded for one session: the replay (index, then chunks in any
+ * order, see ReplayTimeline), the journey and the audio levels page by page,
+ * and in live mode the newest lines on every poll. Pages may overlap;
  * duplicates are dropped. Cursors remember where the next poll starts.
  */
 export class SessionStore {
-  private readonly recordings = new ReplayRecordings();
-  private readonly stylesheets = new StylesheetResolver();
+  /** The replay's chunks; empty until the index is set. */
+  replay = new ReplayTimeline();
   /** Keys of the journey lines seen, and ids of the events they gave; only new lines are parsed. */
   private readonly journeyLineKeys = new Set<string>();
   private readonly journeyIds = new Set<string>();
@@ -27,32 +27,50 @@ export class SessionStore {
   private journeyCursorNs?: string;
   private audioLevelCursorNs?: string;
 
-  tracks: eventWithTime[][] = [];
   journey: JourneyEvent[] = [];
   /** The dialer's per-second audio levels (empty for other apps), sorted. */
   audioLevels: AudioLevelWindow[] = [];
-  skipped = 0;
-  /** Stylesheet references (ajaska-css) that could not be resolved; those render unstyled. */
-  unresolvedStylesheets = 0;
-  /** Distinct stylesheet texts the viewer did not keep (size cap). */
-  droppedStylesheets = 0;
   /** Loki (server) time of the newest replay line, epoch ms. */
   lastReplayMs?: number;
 
   constructor(private readonly sessionId: string) {}
 
+  /** Playable tracks (one per tab open at the same time), from the index on. */
+  get tracks(): ReplayTrack[] {
+    return this.replay.tracks;
+  }
+
+  /** Replay events that could not be decoded. */
+  get skipped(): number {
+    return this.replay.skipped;
+  }
+
+  /** Stylesheet references (ajaska-css) that could not be resolved; those render unstyled. */
+  get unresolvedStylesheets(): number {
+    return this.replay.unresolvedStylesheets;
+  }
+
+  /** Distinct stylesheet texts the viewer did not keep (size cap). */
+  get droppedStylesheets(): number {
+    return this.replay.droppedStylesheets;
+  }
+
+  /** The replay's index arrived: chunks are filled from here; live polling continues at its end. */
+  setIndex(index: ReplayIndex): void {
+    this.replay = new ReplayTimeline(index);
+    if (index.lastLokiNs !== undefined) {
+      this.replayCursorNs = maxNs(this.replayCursorNs, [{ tsNs: index.lastLokiNs, line: '' }]);
+      this.lastReplayMs = nsToMs(this.replayCursorNs!);
+    }
+  }
+
+  /** Lines polled live (any recording, gen or tab of the session). */
   addReplayLines(lines: LokiLine[]): void {
     if (lines.length === 0) {
       return;
     }
     const { decoded, skipped } = decodeReplayLines(lines, this.sessionId);
-    this.skipped += skipped;
-    // Only events not loaded before; pages overlap. Resolved in place, before
-    // the player sees them (it appends events by identity).
-    this.stylesheets.addEvents(decoded.filter((entry) => !this.recordings.has(entry.key)).map((entry) => entry.event));
-    this.unresolvedStylesheets = this.stylesheets.unresolved;
-    this.droppedStylesheets = this.stylesheets.droppedTexts;
-    this.tracks = this.recordings.add(decoded);
+    this.replay.addLive(decoded, skipped);
     this.replayCursorNs = maxNs(this.replayCursorNs, lines);
     this.lastReplayMs = this.replayCursorNs ? nsToMs(this.replayCursorNs) : undefined;
   }

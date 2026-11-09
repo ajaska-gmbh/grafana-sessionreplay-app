@@ -19,6 +19,8 @@ export const testIds = {
     play: 'data-testid player-play',
     wallClock: 'data-testid player-wall-clock',
     goTo: 'data-testid player-go-to',
+    waiting: 'data-testid player-waiting',
+    unloaded: 'data-testid player-unloaded',
     audioLevels: 'data-testid player-audio-levels',
     audioAgent: 'data-testid player-audio-agent',
     audioCustomer: 'data-testid player-audio-customer',

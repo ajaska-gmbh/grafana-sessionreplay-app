@@ -1,5 +1,5 @@
-import { decodeReplayLines, mergeReplayEvents, playableEvents, type DecodedReplayEvent } from './replayEvents';
-import { replayLine, SESSION_ID } from './fixtures';
+import { chunkKey, decodeReplayLines, ReplayTimeline } from './replayEvents';
+import { chunksOf, indexFromLines, linesOf, loadedTimeline, replayLine, SESSION_ID, trackEvents } from './fixtures';
 
 const meta = (timestamp: number, href = 'https://x/') => ({
   type: 4,
@@ -40,102 +40,183 @@ describe('decodeReplayLines', () => {
   });
 });
 
-/** Lines of one recording: meta, full snapshot, then incremental events. */
-function recording(recordingId: string, start: number, increments: number[], sessionId = SESSION_ID) {
-  return [
-    replayLine(meta(start, `https://x/${recordingId}`), { recordingId, seq: 0, sessionId }),
-    replayLine(snapshot(start + 1), { recordingId, seq: 1, sessionId }),
-    ...increments.map((ts, i) => replayLine(incremental(ts), { recordingId, seq: i + 2, sessionId })),
-  ].map((line) => ({ line }));
+type Event = Record<string, unknown> & { timestamp: number };
+
+/** One recording: per gen a Meta + full snapshot, then incremental events. */
+function recording(recordingId: string, gens: Array<{ start: number; increments: number[] }>) {
+  return gens.flatMap(({ start, increments }, gen) => [
+    { event: meta(start, `https://x/${recordingId}`) as Event, recordingId, gen },
+    { event: snapshot(start + 1) as Event, recordingId, gen },
+    ...increments.map((ts) => ({ event: incremental(ts) as Event, recordingId, gen })),
+  ]);
 }
 
-const stamps = (track: Array<{ type: number; timestamp: number }>) =>
-  track.map((event) => [event.type, event.timestamp]);
+const times = (events: ReadonlyArray<{ timestamp: number }>) => events.map((event) => event.timestamp);
 
-describe('mergeReplayEvents', () => {
-  it('de-duplicates by recording, gen and seq and sorts by timestamp', () => {
-    const known = new Map<string, DecodedReplayEvent>();
-    const first = decodeReplayLines(
-      [{ line: replayLine(snapshot(2000), { seq: 1 }) }, { line: replayLine(meta(1999), { seq: 0 }) }],
-      SESSION_ID
-    ).decoded;
-    const second = decodeReplayLines(
-      [{ line: replayLine(snapshot(2000), { seq: 1 }) }, { line: replayLine(incremental(2500), { seq: 2 }) }],
-      SESSION_ID
-    ).decoded;
+describe('ReplayTimeline', () => {
+  it('knows tracks, lengths and chunks from the index before anything is loaded', () => {
+    const lines = linesOf(
+      recording('rec1', [
+        { start: 1000, increments: [1500] },
+        { start: 301000, increments: [400000] },
+      ])
+    );
+    const timeline = new ReplayTimeline(indexFromLines(lines));
 
-    mergeReplayEvents(known, first);
-    const tracks = mergeReplayEvents(known, second);
-
-    expect(tracks).toHaveLength(1);
-    expect(stamps(tracks[0])).toEqual([
-      [4, 1999],
-      [2, 2000],
-      [3, 2500],
+    const [track] = timeline.tracks;
+    expect(track).toMatchObject({ key: 'rec1', startMs: 1000, endMs: 400000 });
+    expect(track.anchor).toMatchObject({ type: 4, timestamp: 1000 });
+    expect(track.chunks.map((chunk) => [chunk.key, chunk.startMs, chunk.endMs, chunk.loaded])).toEqual([
+      ['rec1:0', 1000, 301000, false],
+      ['rec1:1', 301000, 400000, false],
     ]);
+    expect(track.pages.map((page) => page.timestamp)).toEqual([1000, 301000]);
+  });
+
+  it('fills chunks in any order; each sorted, de-duplicated, the index Meta object kept', () => {
+    const lines = linesOf(
+      recording('rec1', [
+        { start: 1000, increments: [1500, 1200] },
+        { start: 301000, increments: [] },
+      ])
+    );
+    const chunks = chunksOf(lines);
+    const timeline = new ReplayTimeline(indexFromLines(lines));
+    const anchor = timeline.tracks[0].anchor;
+
+    timeline.addChunk('rec1:1', chunks.get('rec1:1')!);
+    const afterFirst = timeline.tracks[0];
+    timeline.addChunk('rec1:0', [...chunks.get('rec1:0')!, ...chunks.get('rec1:0')!]);
+
+    const [track] = timeline.tracks;
+    expect(times(track.chunks[0].events)).toEqual([1000, 1001, 1200, 1500]);
+    expect(track.chunks[0].events[0]).toBe(anchor);
+    // The chunk loaded before is the same object: the player sees what changed.
+    expect(track.chunks[1]).toBe(afterFirst.chunks[1]);
+    expect(track.chunks.every((chunk) => chunk.loaded)).toBe(true);
   });
 
   it('plays a reload (next recording) after the earlier one on the same track', () => {
-    const known = new Map<string, DecodedReplayEvent>();
-    const { decoded } = decodeReplayLines(
-      [...recording('rec2', 5000, [5100]), ...recording('rec1', 1000, [1100])],
-      SESSION_ID
-    );
+    const lines = linesOf([
+      ...recording('rec2', [{ start: 5000, increments: [5100] }]),
+      ...recording('rec1', [{ start: 1000, increments: [1100] }]),
+    ]);
 
-    const tracks = mergeReplayEvents(known, decoded);
+    const tracks = loadedTimeline(lines).tracks;
 
     expect(tracks).toHaveLength(1);
-    expect(stamps(tracks[0]).map(([, ts]) => ts)).toEqual([1000, 1001, 1100, 5000, 5001, 5100]);
+    expect(times(trackEvents(tracks[0]))).toEqual([1000, 1001, 1100, 5000, 5001, 5100]);
   });
 
   it('puts recordings that overlap in time (two tabs) on separate tracks', () => {
-    const known = new Map<string, DecodedReplayEvent>();
-    const { decoded } = decodeReplayLines(
-      [
-        ...recording('tabA', 1000, [1500, 3000]),
-        ...recording('tabB', 2000, [2500]),
-        ...recording('tabA2', 4000, [4100]),
-      ],
-      SESSION_ID
-    );
+    const lines = linesOf([
+      ...recording('tabA', [{ start: 1000, increments: [1500, 3000] }]),
+      ...recording('tabB', [{ start: 2000, increments: [2500] }]),
+      ...recording('tabA2', [{ start: 4000, increments: [4100] }]),
+    ]);
 
-    const tracks = mergeReplayEvents(known, decoded);
+    const tracks = loadedTimeline(lines).tracks;
 
-    expect(tracks.map((track) => track.map((event) => event.timestamp))).toEqual([
+    expect(tracks.map((track) => times(trackEvents(track)))).toEqual([
       [1000, 1001, 1500, 3000, 4000, 4001, 4100],
       [2000, 2001, 2500],
     ]);
+    expect(tracks.map((track) => track.key)).toEqual(['tabA', 'tabB']);
   });
 
-  it('keeps distinct events without recording id that share timestamp and type (replay < 2.13)', () => {
-    const legacy = (payload: Record<string, unknown>) =>
-      replayLine(payload)
-        .replace(/ event_data_recording_id=\S+/, '')
-        .replace(/ event_data_gen=\S+/, '')
-        .replace(/ event_data_seq=\S+/, '');
-    const known = new Map<string, DecodedReplayEvent>();
-    const lines = [
-      legacy(meta(1000)),
-      legacy(snapshot(1001)),
-      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 1 } }),
-      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 2 } }),
-      legacy({ type: 3, timestamp: 1002, data: { source: 2, id: 2 } }),
-    ].map((line) => ({ line }));
+  it("drops what comes before a recording's first Meta (it would move the track start)", () => {
+    const lines = linesOf([
+      { event: incremental(900) as Event },
+      ...recording('rec1', [{ start: 1000, increments: [1100] }]),
+    ]);
 
-    const [track] = mergeReplayEvents(known, decodeReplayLines(lines, SESSION_ID).decoded);
+    const [track] = loadedTimeline(lines).tracks;
 
-    expect(track).toHaveLength(4);
-  });
-});
-
-describe('playableEvents', () => {
-  it('starts at the closest meta before the first full snapshot', () => {
-    const events = [incremental(900), meta(1000), incremental(1001), snapshot(1002), incremental(1003)] as never[];
-
-    expect(playableEvents(events).map((event: { timestamp: number }) => event.timestamp)).toEqual([1000, 1002, 1003]);
+    expect(times(trackEvents(track))).toEqual([1000, 1001, 1100]);
   });
 
-  it('returns nothing without a full snapshot', () => {
-    expect(playableEvents([meta(1), incremental(2)] as never[])).toEqual([]);
+  it('ignores lines without recording id (replay < 2.13): they cannot be indexed', () => {
+    const legacy = replayLine(meta(1000)).replace(
+      / event_data_gen=\S+ event_data_recording_id=\S+ event_data_seq=\S+/,
+      ''
+    );
+
+    expect(new ReplayTimeline(indexFromLines([{ tsNs: '1000000000', line: legacy }])).tracks).toEqual([]);
+  });
+
+  describe('a gen whose Meta never arrived', () => {
+    const lines = linesOf([
+      ...recording('rec1', [{ start: 1000, increments: [2000] }]),
+      { event: incremental(310000) as Event, gen: 1 },
+      { event: incremental(320000) as Event, gen: 1 },
+      ...recording('rec1', [{ start: 601000, increments: [] }]).map((entry) => ({ ...entry, gen: 2 })),
+    ]);
+
+    it('depends on the gen before it, starts at an estimate, then at its first event', () => {
+      const timeline = new ReplayTimeline(indexFromLines(lines));
+      const estimated = timeline.tracks[0].chunks[1];
+      expect(estimated).toMatchObject({ key: 'rec1:1', dependsOn: 'rec1:0', startMs: 301000 });
+
+      timeline.addChunk('rec1:1', chunksOf(lines).get('rec1:1')!);
+
+      const [first, gen1] = timeline.tracks[0].chunks;
+      expect(gen1.startMs).toBe(310000);
+      expect(first.endMs).toBe(310000);
+    });
+  });
+
+  describe('live', () => {
+    const initial = linesOf(recording('rec1', [{ start: 1000, increments: [1500] }]));
+
+    it('appends to a loaded chunk, and starts new gens and tabs whole', () => {
+      const timeline = loadedTimeline(initial);
+      const more = linesOf([
+        { event: incremental(1600) as Event },
+        ...recording('rec1', [{ start: 301000, increments: [302000] }]).map((entry) => ({ ...entry, gen: 1 })),
+        ...recording('tab2', [{ start: 1700, increments: [1800] }]),
+      ]).map((entry, index) => ({
+        ...entry,
+        line: entry.line.replace(/event_data_seq=\d+/, `event_data_seq=${100 + index}`),
+      }));
+
+      timeline.addLive(decodeReplayLines(more, SESSION_ID).decoded);
+
+      const [first, second] = timeline.tracks;
+      expect(times(trackEvents(first))).toEqual([1000, 1001, 1500, 1600, 301000, 301001, 302000]);
+      expect(first.chunks.map((chunk) => [chunk.key, chunk.loaded])).toEqual([
+        ['rec1:0', true],
+        ['rec1:1', true],
+      ]);
+      expect(first.endMs).toBe(302000);
+      expect(second.key).toBe('tab2');
+      expect(times(trackEvents(second))).toEqual([1700, 1701, 1800]);
+    });
+
+    it('keeps lines of a chunk not loaded yet until it is, then merges them', () => {
+      const timeline = new ReplayTimeline(indexFromLines(initial));
+      const late = linesOf([{ event: incremental(1600) as Event }]).map((entry) => ({
+        ...entry,
+        line: entry.line.replace('event_data_seq=0', 'event_data_seq=99'),
+      }));
+
+      timeline.addLive(decodeReplayLines(late, SESSION_ID).decoded);
+      expect(timeline.tracks[0].chunks[0]).toMatchObject({ loaded: false, events: [] });
+      timeline.addChunk(chunkKey('rec1', 0), chunksOf(initial).get('rec1:0')!);
+
+      expect(times(trackEvents(timeline.tracks[0]))).toEqual([1000, 1001, 1500, 1600]);
+    });
+
+    it('waits for the first Meta of a new tab before it plays', () => {
+      const timeline = loadedTimeline(initial);
+      // Opened while the first tab still records: a second track.
+      const tab = linesOf(recording('tab2', [{ start: 1200, increments: [1300] }]));
+      const decoded = decodeReplayLines(tab, SESSION_ID).decoded;
+
+      timeline.addLive(decoded.slice(2));
+      expect(timeline.tracks).toHaveLength(1);
+      timeline.addLive(decoded.slice(0, 2));
+
+      expect(times(trackEvents(timeline.tracks[1]))).toEqual([1200, 1201, 1300]);
+    });
   });
 });

@@ -1,6 +1,8 @@
 import type { eventWithTime } from '@grafana/rrweb-types';
 import { parseLogfmt } from './logfmt';
+import type { GenIndex, ReplayIndex } from './replaySource';
 import { mergeSorted } from './sorted';
+import { StylesheetResolver } from './stylesheetRefs';
 
 export const REPLAY_EVENT_NAME = 'faro.session_recording.event';
 
@@ -63,118 +65,385 @@ export function decodeReplayLines(
   return { decoded, skipped };
 }
 
-/**
- * Merge new events into the known ones (de-duplicated by recording, gen and
- * seq) and split them into playable tracks.
- *
- * Every recording starts with its own Meta + full snapshot. Recordings that
- * follow each other (page reloads) are played back to back on one track;
- * recordings that overlap in time (the same session open in two tabs) get a
- * track each, because mixing their DOM changes would corrupt the playback.
- * Within a recording, events are ordered by rrweb timestamp, then gen and seq.
- */
-export function mergeReplayEvents(
-  known: Map<string, DecodedReplayEvent>,
-  incoming: DecodedReplayEvent[]
-): eventWithTime[][] {
-  for (const entry of incoming) {
-    if (!known.has(entry.key)) {
-      known.set(entry.key, entry);
-    }
-  }
-
-  const byRecording = new Map<string, DecodedReplayEvent[]>();
-  for (const entry of known.values()) {
-    const list = byRecording.get(entry.recordingId) ?? [];
-    list.push(entry);
-    byRecording.set(entry.recordingId, list);
-  }
-
-  const recordings = [...byRecording.values()]
-    .map((entries) => entries.sort(inRecordingOrder).map((entry) => entry.event))
-    .sort((a, b) => a[0].timestamp - b[0].timestamp);
-
-  const tracks: eventWithTime[][] = [];
-  for (const recording of recordings) {
-    const start = recording[0].timestamp;
-    const track = tracks.find((candidate) => candidate[candidate.length - 1].timestamp <= start);
-    if (track) {
-      track.push(...recording);
-    } else {
-      tracks.push([...recording]);
-    }
-  }
-
-  return tracks.map(playableEvents).filter((track) => track.length > 0);
-}
-
 const inRecordingOrder = (a: DecodedReplayEvent, b: DecodedReplayEvent) =>
   a.event.timestamp - b.event.timestamp || a.gen - b.gen || a.seq - b.seq;
 
-/**
- * mergeReplayEvents, page by page: each recording's events stay sorted and a
- * new page is merged in (O(n + k)) rather than everything being sorted again.
- * Gives exactly what mergeReplayEvents gives for the same events.
- */
-export class ReplayRecordings {
-  private readonly keys = new Set<string>();
-  private readonly recordings = new Map<string, DecodedReplayEvent[]>();
+/** One chunk (a recording's gen) as the player sees it. Replaced, never changed, when it changes. */
+export interface ReplayChunk {
+  key: string;
+  recordingId: string;
+  gen: number;
+  /** rrweb times: its Meta (or its first event / an estimate), and the next chunk's start or the recording's end. */
+  startMs: number;
+  endMs: number;
+  /** Key of the chunk that must be loaded for this one to play (it has no Meta/snapshot of its own). */
+  dependsOn?: string;
+  loaded: boolean;
+  /** Gave up loading it (after retries); asked for again on the next seek there. */
+  failed: boolean;
+  /** Sorted by time; empty until loaded. */
+  events: readonly eventWithTime[];
+}
 
-  /** True when an event of this key is loaded already. */
-  has(key: string): boolean {
-    return this.keys.has(key);
-  }
-
-  add(incoming: DecodedReplayEvent[]): eventWithTime[][] {
-    const fresh = new Map<string, DecodedReplayEvent[]>();
-    for (const entry of incoming) {
-      if (this.keys.has(entry.key)) {
-        continue;
-      }
-      this.keys.add(entry.key);
-      const list = fresh.get(entry.recordingId) ?? [];
-      list.push(entry);
-      fresh.set(entry.recordingId, list);
-    }
-    for (const [recordingId, entries] of fresh) {
-      entries.sort(inRecordingOrder);
-      this.recordings.set(recordingId, mergeSorted(this.recordings.get(recordingId) ?? [], entries, inRecordingOrder));
-    }
-    return this.tracks();
-  }
-
-  private tracks(): eventWithTime[][] {
-    const recordings = [...this.recordings.values()]
-      .map((entries) => entries.map((entry) => entry.event))
-      .sort((a, b) => a[0].timestamp - b[0].timestamp);
-
-    const tracks: eventWithTime[][] = [];
-    for (const recording of recordings) {
-      const start = recording[0].timestamp;
-      const track = tracks.find((candidate) => candidate[candidate.length - 1].timestamp <= start);
-      if (track) {
-        track.push(...recording);
-      } else {
-        tracks.push(recording);
-      }
-    }
-    return tracks.map(playableEvents).filter((track) => track.length > 0);
-  }
+export interface PageLoad {
+  timestamp: number;
+  href?: string;
 }
 
 /**
- * Trim to what the player can render: it needs a Meta event and a full DOM
- * snapshot first, so incremental events before the first snapshot are dropped
- * (keeping the closest preceding Meta). Returns [] when there is no snapshot.
+ * One tab's playback: recordings that follow each other (page reloads) back to
+ * back. Times are rrweb times; offsets count from `startMs`, the first
+ * recording's first Meta (`anchor`), whatever is loaded.
  */
-export function playableEvents(events: eventWithTime[]): eventWithTime[] {
-  const firstSnapshot = events.findIndex((event) => event.type === RRWEB_FULL_SNAPSHOT);
-  if (firstSnapshot === -1) {
-    return [];
+export interface ReplayTrack {
+  key: string;
+  startMs: number;
+  endMs: number;
+  anchor: eventWithTime;
+  chunks: readonly ReplayChunk[];
+  /** Every Meta (page load or checkout) with its URL, sorted. */
+  pages: readonly PageLoad[];
+}
+
+export const chunkKey = (recordingId: string, gen: number) => `${recordingId}:${gen}`;
+
+interface ChunkState {
+  info: GenIndex;
+  loaded: boolean;
+  failed: boolean;
+  entries: DecodedReplayEvent[];
+  keys: Set<string>;
+  /** Live lines of a chunk not loaded yet: merged (and their stylesheets resolved) with it. */
+  buffer: DecodedReplayEvent[];
+  /** Kept while more lines may come (live); stylesheet references only resolve within a gen. */
+  resolver?: StylesheetResolver;
+  view?: ReplayChunk;
+}
+
+interface RecordingState {
+  recordingId: string;
+  firstGen: number;
+  gens: ChunkState[];
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * A session's replay as chunks: built from the index, filled chunk by chunk in
+ * any order (and by live polling), split into tracks. Every change touches
+ * only its chunk: events are never re-sorted or copied across chunks.
+ *
+ * Tracks: recordings that overlap in time (the session open in two tabs) get a
+ * track each, because mixing their DOM changes would corrupt the playback;
+ * recordings that follow each other share one. Decided from the index's start
+ * and end of every recording, so tracks (and the `track` link parameter) are
+ * known before anything is loaded.
+ */
+export class ReplayTimeline {
+  skipped = 0;
+  unresolvedStylesheets = 0;
+  droppedStylesheets = 0;
+
+  private readonly recordings = new Map<string, RecordingState>();
+  private readonly chunks = new Map<string, ChunkState>();
+  /** Live events of recordings not seen yet, until their first Meta arrives. */
+  private readonly orphans = new Map<string, DecodedReplayEvent[]>();
+  private retiredUnresolved = 0;
+  private retiredDropped = 0;
+  private cachedTracks?: ReplayTrack[];
+
+  constructor(index?: ReplayIndex) {
+    for (const recording of index?.recordings ?? []) {
+      const state: RecordingState = {
+        recordingId: recording.recordingId,
+        firstGen: recording.gens[0].gen,
+        gens: [],
+        startMs: recording.startMs,
+        endMs: recording.endMs,
+      };
+      this.recordings.set(recording.recordingId, state);
+      for (const gen of recording.gens) {
+        this.addGen(state, { ...gen }, false);
+      }
+    }
   }
-  const metaBefore = events
-    .slice(0, firstSnapshot)
-    .reverse()
-    .find((event) => event.type === RRWEB_META);
-  return metaBefore ? [metaBefore, ...events.slice(firstSnapshot)] : events.slice(firstSnapshot);
+
+  get tracks(): ReplayTrack[] {
+    this.cachedTracks ??= this.buildTracks();
+    return this.cachedTracks;
+  }
+
+  /** Where to fetch a chunk (undefined for an unknown key). */
+  chunkInfo(key: string): GenIndex | undefined {
+    return this.chunks.get(key)?.info;
+  }
+
+  isLoaded(key: string): boolean {
+    return this.chunks.get(key)?.loaded ?? false;
+  }
+
+  /** A chunk's events arrived (all of them: its whole window). */
+  addChunk(key: string, decoded: DecodedReplayEvent[], skipped = 0): void {
+    const chunk = this.chunks.get(key);
+    if (!chunk || chunk.loaded) {
+      return;
+    }
+    this.skipped += skipped;
+    chunk.loaded = true;
+    chunk.failed = false;
+    const buffered = chunk.buffer;
+    chunk.buffer = [];
+    this.merge(chunk, [...buffered, ...decoded]);
+    if (!this.mayGrow(chunk)) {
+      this.retireResolver(chunk);
+    }
+    this.countStylesheets();
+  }
+
+  failChunk(key: string): void {
+    const chunk = this.chunks.get(key);
+    if (chunk && !chunk.loaded) {
+      chunk.failed = true;
+      this.changed(chunk);
+    }
+  }
+
+  /**
+   * Lines polled live (from the index's end on): appended to their chunk, or to
+   * a chunk not loaded yet (merged when it is); new gens and new recordings
+   * (a reload, another tab) start chunks that live polling sees whole.
+   */
+  addLive(decoded: DecodedReplayEvent[], skipped = 0): void {
+    this.skipped += skipped;
+    const byChunk = new Map<string, DecodedReplayEvent[]>();
+    for (const entry of decoded) {
+      if (!entry.recordingId) {
+        continue;
+      }
+      const recording = this.recordings.get(entry.recordingId) ?? this.startRecording(entry);
+      if (!recording) {
+        continue;
+      }
+      if (entry.gen < recording.firstGen) {
+        continue;
+      }
+      const key = chunkKey(entry.recordingId, entry.gen);
+      const list = byChunk.get(key) ?? [];
+      list.push(entry);
+      byChunk.set(key, list);
+    }
+    for (const [key, entries] of byChunk) {
+      const recording = this.recordings.get(entries[0].recordingId)!;
+      this.extendTo(recording, entries[0].gen, entries);
+      const chunk = this.chunks.get(key)!;
+      if (chunk.loaded) {
+        this.merge(chunk, entries);
+      } else {
+        chunk.buffer.push(...entries.filter((entry) => !chunk.keys.has(entry.key)));
+      }
+      for (const entry of entries) {
+        recording.endMs = Math.max(recording.endMs, entry.event.timestamp);
+      }
+      this.cachedTracks = undefined;
+    }
+    this.countStylesheets();
+  }
+
+  /** Live events of an unknown recording: kept until its first Meta starts it. */
+  private startRecording(entry: DecodedReplayEvent): RecordingState | undefined {
+    const pending = this.orphans.get(entry.recordingId) ?? [];
+    pending.push(entry);
+    const meta = pending.filter((candidate) => candidate.event.type === RRWEB_META).sort(inRecordingOrder)[0];
+    if (!meta) {
+      this.orphans.set(entry.recordingId, pending);
+      return undefined;
+    }
+    this.orphans.delete(entry.recordingId);
+    const recording: RecordingState = {
+      recordingId: entry.recordingId,
+      firstGen: meta.gen,
+      gens: [],
+      startMs: meta.event.timestamp,
+      endMs: meta.event.timestamp,
+    };
+    this.recordings.set(entry.recordingId, recording);
+    const info: GenIndex = {
+      recordingId: entry.recordingId,
+      gen: meta.gen,
+      meta: meta.event,
+      startMs: meta.event.timestamp,
+      window: { fromMs: 0, toMs: 0 },
+    };
+    this.addGen(recording, info, true);
+    const earlier = pending.filter((candidate) => candidate !== entry && candidate.gen >= meta.gen);
+    if (earlier.length > 0) {
+      this.addLive(earlier);
+    }
+    return recording;
+  }
+
+  /** New gens up to `gen`, seen whole by live polling (they started after it began). */
+  private extendTo(recording: RecordingState, gen: number, entries: DecodedReplayEvent[]): void {
+    const last = recording.firstGen + recording.gens.length - 1;
+    if (gen <= last) {
+      return;
+    }
+    for (let next = last + 1; next <= gen; next++) {
+      const meta = next === gen ? entries.find((entry) => entry.event.type === RRWEB_META) : undefined;
+      const startMs = meta?.event.timestamp ?? Math.min(...entries.map((entry) => entry.event.timestamp));
+      const info: GenIndex = {
+        recordingId: recording.recordingId,
+        gen: next,
+        meta: meta?.event,
+        startMs: next === recording.firstGen ? recording.startMs : startMs,
+        window: { fromMs: 0, toMs: 0 },
+        dependsOn: meta || next === recording.firstGen ? undefined : next - 1,
+      };
+      this.addGen(recording, info, true);
+    }
+    // Earlier gens get no more lines worth their stylesheet texts.
+    for (const older of recording.gens.slice(0, -2)) {
+      this.retireResolver(older);
+    }
+  }
+
+  private addGen(recording: RecordingState, info: GenIndex, loaded: boolean): void {
+    const chunk: ChunkState = { info, loaded, failed: false, entries: [], keys: new Set(), buffer: [] };
+    if (recording.gens.length > 0) {
+      // The chunk before ends where this one starts.
+      recording.gens[recording.gens.length - 1].view = undefined;
+    }
+    recording.gens.push(chunk);
+    this.chunks.set(chunkKey(info.recordingId, info.gen), chunk);
+    this.cachedTracks = undefined;
+  }
+
+  /** Adds new entries to a chunk: deduplicated, stylesheets resolved, merged in order. */
+  private merge(chunk: ChunkState, incoming: DecodedReplayEvent[]): void {
+    const recording = this.recordings.get(chunk.info.recordingId)!;
+    const firstOfRecording = chunk.info.gen === recording.firstGen;
+    const fresh: DecodedReplayEvent[] = [];
+    for (const entry of incoming) {
+      if (chunk.keys.has(entry.key)) {
+        continue;
+      }
+      chunk.keys.add(entry.key);
+      const meta = chunk.info.meta;
+      if (meta && entry.event !== meta && entry.event.type === RRWEB_META && entry.event.timestamp === meta.timestamp) {
+        // The index's Meta object stands for its line: one object per event for the player.
+        fresh.push({ ...entry, event: meta });
+        continue;
+      }
+      // Nothing plays before a recording's first Meta: it would shift the track's start.
+      if (firstOfRecording && entry.event.timestamp < recording.startMs) {
+        continue;
+      }
+      fresh.push(entry);
+    }
+    if (fresh.length === 0) {
+      this.changed(chunk);
+      return;
+    }
+    chunk.resolver ??= new StylesheetResolver();
+    chunk.resolver.addEvents(fresh.filter((entry) => entry.event !== chunk.info.meta).map((entry) => entry.event));
+    fresh.sort(inRecordingOrder);
+    chunk.entries = mergeSorted(chunk.entries, fresh, inRecordingOrder);
+    if (!chunk.info.meta && chunk.entries.length > 0) {
+      // A gen without Meta starts with its first event, not the estimate.
+      chunk.info.startMs = chunk.entries[0].event.timestamp;
+      const index = recording.gens.indexOf(chunk);
+      if (index > 0) {
+        recording.gens[index - 1].view = undefined;
+      }
+    }
+    recording.endMs = Math.max(recording.endMs, chunk.entries[chunk.entries.length - 1].event.timestamp);
+    this.changed(chunk);
+  }
+
+  /** Only a recording's newest gens can still grow (live). */
+  private mayGrow(chunk: ChunkState): boolean {
+    const recording = this.recordings.get(chunk.info.recordingId)!;
+    return recording.gens[recording.gens.length - 1] === chunk;
+  }
+
+  private retireResolver(chunk: ChunkState): void {
+    if (chunk.resolver) {
+      this.retiredUnresolved += chunk.resolver.unresolved;
+      this.retiredDropped += chunk.resolver.droppedTexts;
+      chunk.resolver = undefined;
+    }
+  }
+
+  private countStylesheets(): void {
+    let unresolved = this.retiredUnresolved;
+    let dropped = this.retiredDropped;
+    for (const chunk of this.chunks.values()) {
+      unresolved += chunk.resolver?.unresolved ?? 0;
+      dropped += chunk.resolver?.droppedTexts ?? 0;
+    }
+    this.unresolvedStylesheets = unresolved;
+    this.droppedStylesheets = dropped;
+  }
+
+  private changed(chunk: ChunkState): void {
+    chunk.view = undefined;
+    this.cachedTracks = undefined;
+  }
+
+  private viewOf(recording: RecordingState, index: number): ReplayChunk {
+    const chunk = recording.gens[index];
+    if (chunk.view) {
+      return chunk.view;
+    }
+    const next = recording.gens[index + 1];
+    const { info } = chunk;
+    chunk.view = {
+      key: chunkKey(info.recordingId, info.gen),
+      recordingId: info.recordingId,
+      gen: info.gen,
+      startMs: info.startMs,
+      endMs: Math.max(info.startMs, next ? next.info.startMs : recording.endMs),
+      dependsOn: info.dependsOn === undefined ? undefined : chunkKey(info.recordingId, info.dependsOn),
+      loaded: chunk.loaded,
+      failed: chunk.failed,
+      events: chunk.entries.map((entry) => entry.event),
+    };
+    return chunk.view;
+  }
+
+  private buildTracks(): ReplayTrack[] {
+    const recordings = [...this.recordings.values()].sort((a, b) => a.startMs - b.startMs);
+    const groups: RecordingState[][] = [];
+    for (const recording of recordings) {
+      const group = groups.find((candidate) => candidate[candidate.length - 1].endMs <= recording.startMs);
+      if (group) {
+        group.push(recording);
+      } else {
+        groups.push([recording]);
+      }
+    }
+    return groups.map((group) => {
+      const chunks: ReplayChunk[] = [];
+      const pages: PageLoad[] = [];
+      for (const recording of group) {
+        recording.gens.forEach((chunk, index) => {
+          chunks.push(this.viewOf(recording, index));
+          if (chunk.info.meta) {
+            pages.push({
+              timestamp: chunk.info.meta.timestamp,
+              href: (chunk.info.meta.data as { href?: string }).href,
+            });
+          }
+        });
+      }
+      return {
+        key: group[0].recordingId,
+        startMs: group[0].startMs,
+        endMs: Math.max(...group.map((recording) => recording.endMs)),
+        anchor: group[0].gens[0].info.meta!,
+        chunks,
+        pages,
+      };
+    });
+  }
 }

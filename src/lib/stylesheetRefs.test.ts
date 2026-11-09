@@ -1,8 +1,8 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
 import type { eventWithTime } from '@grafana/rrweb-types';
-import { replayLine, SESSION_ID } from './fixtures';
-import { SessionStore } from './sessionStore';
+import { indexFromLines, loadedTimeline, replayLine, SESSION_ID, trackEvents } from './fixtures';
+import { decodeReplayLines, ReplayTimeline } from './replayEvents';
 import { liveStartIndex } from './playerEvents';
 import {
   cyrb53,
@@ -180,68 +180,89 @@ describe('StylesheetResolver', () => {
   });
 });
 
-describe('SessionStore with stylesheet references', () => {
-  const lines = (events: Event[], from: number, recordingId = 'rec1') =>
+describe('ReplayTimeline with stylesheet references', () => {
+  const lines = (events: Event[], from: number, recordingId = 'rec1', gen = 0) =>
     events.map((event, index) => ({
       tsNs: `${event.timestamp}000000`,
-      line: replayLine(event, { seq: from + index, recordingId }),
+      line: replayLine(event, { seq: from + index, recordingId, gen }),
     }));
+  const decoded = (entries: Array<{ line: string }>) => decodeReplayLines(entries, SESSION_ID).decoded;
 
   it('hands the player resolved events, and counts what stays unresolved', () => {
-    const store = new SessionStore(SESSION_ID);
-
-    store.addReplayLines(
+    const timeline = loadedTimeline(
       lines(
         [meta(1000), snapshot(1001, CSS), frame(1002, stylesheetRef(CSS)), frame(1003, stylesheetRef(OTHER_CSS))],
         0
       )
     );
 
-    const [track] = store.tracks as Event[][];
+    const track = trackEvents(timeline.tracks[0]) as Event[];
     expect(frameCss(track[2])).toBe(CSS);
     expect(frameCss(track[3])).toBe('');
-    expect(store.unresolvedStylesheets).toBe(1);
+    expect(timeline.unresolvedStylesheets).toBe(1);
   });
 
-  it('resolves for live playback that starts at a later snapshot', () => {
-    const store = new SessionStore(SESSION_ID);
-    // Initial load: the recording start, where the CSS was sent in full.
-    store.addReplayLines(lines([meta(1000), snapshot(1001, CSS), frame(1002, CSS)], 0));
-    // Live poll: a checkout five minutes later, the page and frame by reference only.
-    store.addReplayLines(
-      lines([meta(301000), snapshot(301001, stylesheetRef(CSS)), frame(301002, stylesheetRef(CSS))], 3)
-    );
+  it('resolves each chunk on its own, whatever order chunks load in (every checkout sends the CSS again)', () => {
+    const all = [
+      ...lines([meta(1000), snapshot(1001, CSS), frame(1002, stylesheetRef(CSS))], 0),
+      ...lines([meta(301000), snapshot(301001, OTHER_CSS), frame(301002, stylesheetRef(OTHER_CSS))], 3, 'rec1', 1),
+    ];
 
-    const track = store.tracks[0] as Event[];
+    const timeline = loadedTimeline(all, SESSION_ID, ['rec1:1', 'rec1:0']);
+
+    const track = trackEvents(timeline.tracks[0]) as Event[];
+    expect(frameCss(track[2])).toBe(CSS);
+    expect(pageCss(track[4])).toBe(OTHER_CSS);
+    expect(frameCss(track[5])).toBe(OTHER_CSS);
+    expect(timeline.unresolvedStylesheets).toBe(0);
+  });
+
+  it('resolves live lines of a chunk with the texts of its loaded part', () => {
+    const initial = lines([meta(1000), snapshot(1001, CSS), frame(1002, CSS)], 0);
+    const timeline = loadedTimeline(initial);
+    // Live poll: later in the same checkout, the frame by reference only.
+    timeline.addLive(decoded(lines([frame(2000, stylesheetRef(CSS))], 3)));
+
+    const track = trackEvents(timeline.tracks[0]) as Event[];
     const live = track.slice(liveStartIndex(track));
-    expect(live.map((event) => event.timestamp)).toEqual([301000, 301001, 301002]);
-    expect(pageCss(live[1])).toBe(CSS);
-    expect(frameCss(live[2])).toBe(CSS);
-    expect(store.unresolvedStylesheets).toBe(0);
+    expect(live.map((event) => event.timestamp)).toEqual([1000, 1001, 1002, 2000]);
+    expect(frameCss(live[3])).toBe(CSS);
+    expect(timeline.unresolvedStylesheets).toBe(0);
   });
 
-  it('keeps the event objects stable when overlapping pages repeat lines', () => {
-    const store = new SessionStore(SESSION_ID);
+  it('resolves live lines that arrive before their chunk once it loads', () => {
+    const initial = lines([meta(1000), snapshot(1001, CSS)], 0);
+    const timeline = new ReplayTimeline(indexFromLines(initial));
+
+    timeline.addLive(decoded(lines([frame(2000, stylesheetRef(CSS))], 3)));
+    timeline.addChunk('rec1:0', decoded(initial));
+
+    const track = trackEvents(timeline.tracks[0]) as Event[];
+    expect(frameCss(track[2])).toBe(CSS);
+    expect(timeline.unresolvedStylesheets).toBe(0);
+  });
+
+  it('keeps the event objects stable when overlapping polls repeat lines', () => {
     const first = lines([meta(1000), snapshot(1001, CSS), frame(1002, stylesheetRef(CSS))], 0);
+    const timeline = loadedTimeline(first);
+    const before = trackEvents(timeline.tracks[0]);
 
-    store.addReplayLines(first);
-    const before = store.tracks[0];
-    store.addReplayLines(first.slice(1));
+    timeline.addLive(decoded(first.slice(1)));
 
-    expect(store.tracks[0]).toEqual(before);
-    store.tracks[0].forEach((event, index) => expect(event).toBe(before[index]));
-    expect(store.unresolvedStylesheets).toBe(0);
+    const after = trackEvents(timeline.tracks[0]);
+    expect(after).toEqual(before);
+    after.forEach((event, index) => expect(event).toBe(before[index]));
+    expect(timeline.unresolvedStylesheets).toBe(0);
   });
 
   it('starts over with a new recording that sends the CSS in full again', () => {
-    const store = new SessionStore(SESSION_ID);
-    store.addReplayLines(lines([meta(1000), snapshot(1001, CSS)], 0, 'rec1'));
-    store.addReplayLines(
-      lines([meta(5000), snapshot(5001, OTHER_CSS), frame(5002, stylesheetRef(OTHER_CSS))], 0, 'rec2')
-    );
+    const timeline = loadedTimeline([
+      ...lines([meta(1000), snapshot(1001, CSS)], 0, 'rec1'),
+      ...lines([meta(5000), snapshot(5001, OTHER_CSS), frame(5002, stylesheetRef(OTHER_CSS))], 0, 'rec2'),
+    ]);
 
-    const track = store.tracks[0] as Event[];
+    const track = trackEvents(timeline.tracks[0]) as Event[];
     expect(frameCss(track[track.length - 1])).toBe(OTHER_CSS);
-    expect(store.unresolvedStylesheets).toBe(0);
+    expect(timeline.unresolvedStylesheets).toBe(0);
   });
 });
