@@ -7,6 +7,7 @@ export interface FeedReplayer {
   play(timeOffset?: number): void;
   pause(timeOffset?: number): void;
   getCurrentTime(): number;
+  setConfig(config: { skipInactive: boolean }): void;
 }
 
 /** Length of the track (ms), from the index: not from what is loaded. */
@@ -66,6 +67,27 @@ export function nextChunkOffset(track: ReplayTrack, offsetMs: number): number | 
   return next ? next.startMs - track.startMs : undefined;
 }
 
+/**
+ * Where playback goes on after it ran out of events at `offsetMs`: loaded
+ * chunks without events are passed over; then the track ends, playback waits
+ * for a chunk still loading (`waitFor`, its start offset), or a loaded one
+ * plays on.
+ */
+export function afterRun(
+  track: ReplayTrack,
+  offsetMs: number
+): { kind: 'end' } | { kind: 'wait'; waitFor: number } | { kind: 'play' } {
+  for (let i = chunkIndexAt(track, offsetMs) + 1; i < track.chunks.length; i++) {
+    if (!isReady(track, i)) {
+      return { kind: 'wait', waitFor: track.chunks[i].startMs - track.startMs };
+    }
+    if (track.chunks[i].events.length > 0) {
+      return { kind: 'play' };
+    }
+  }
+  return { kind: 'end' };
+}
+
 /** Spans (offsets) of the track not loaded yet, merged; drawn hatched on the timeline. */
 export function unloadedSpans(track: ReplayTrack): Array<{ fromMs: number; toMs: number }> {
   const spans: Array<{ fromMs: number; toMs: number }> = [];
@@ -89,11 +111,15 @@ export function unloadedSpans(track: ReplayTrack): Array<{ fromMs: number; toMs:
  * Hands a track's loaded chunks to one rrweb Replayer without ever disturbing
  * playback.
  *
- * rrweb applies an event older than the time it last played or seeked from
- * immediately, out of order (the page flashes back). So:
+ * rrweb's addEvent applies an event older than the time it last played or
+ * seeked from (its baseline) at once, out of order (the page flashes back);
+ * newer ones are queued (scheduled while playing). So:
  * - at a seek (and at creation) the target chunk, what it depends on and the
- *   loaded chunks right after it are added, also ones behind the playhead,
- *   and the seek that follows rebuilds the page from the last snapshot;
+ *   loaded chunks right after it are added, also ones behind the playhead
+ *   (those are applied at once), and the seek that follows rebuilds the page
+ *   from the last snapshot in the same task, before anything is painted.
+ *   That costs a second page build only when a chunk behind the old position
+ *   is added, i.e. on seeks to where nothing had been added yet;
  * - between seeks only chunks ahead of the playhead are added, and only while
  *   they continue the loaded run from it: a chunk past an unloaded one would
  *   let "skip inactivity" race over the gap. Everything else is held until a
@@ -101,6 +127,8 @@ export function unloadedSpans(track: ReplayTrack): Array<{ fromMs: number; toMs:
  */
 export class TrackFeed {
   private readonly added = new WeakSet<eventWithTime>();
+  /** The player's "skip inactivity" setting, restored after a reset. */
+  private skipInactive = true;
 
   constructor(private current: ReplayTrack) {}
 
@@ -164,6 +192,7 @@ export class TrackFeed {
       replayer.addEvent(event);
       this.added.add(event);
     }
+    this.stopSkipping(replayer);
     const ready = readyAt(this.current, offsetMs);
     if (play && ready) {
       replayer.play(offsetMs);
@@ -171,6 +200,29 @@ export class TrackFeed {
       replayer.pause(offsetMs);
     }
     return ready;
+  }
+
+  setSkipInactive(value: boolean): void {
+    this.skipInactive = value;
+  }
+
+  /**
+   * Ends a fast-forward through inactivity. rrweb resets its speed only when
+   * skipping ends on its own or "skip inactivity" is turned off, not on
+   * play/pause: after a seek or a pause at a part still loading, playback
+   * would go on at up to 360×.
+   */
+  stopSkipping(replayer: FeedReplayer): void {
+    replayer.setConfig({ skipInactive: false });
+    if (this.skipInactive) {
+      replayer.setConfig({ skipInactive: true });
+    }
+  }
+
+  /** Pauses where playback reached a part still loading, out of any fast-forward. */
+  pauseForGap(replayer: FeedReplayer): void {
+    replayer.pause();
+    this.stopSkipping(replayer);
   }
 
   /** Whether a seek to `offsetMs` would add events held so far. */

@@ -200,6 +200,15 @@ export class ReplayTimeline {
     this.countStylesheets();
   }
 
+  /** A given-up chunk is being tried again. */
+  retryChunk(key: string): void {
+    const chunk = this.chunks.get(key);
+    if (chunk?.failed) {
+      chunk.failed = false;
+      this.changed(chunk);
+    }
+  }
+
   failChunk(key: string): void {
     const chunk = this.chunks.get(key);
     if (chunk && !chunk.loaded) {
@@ -236,6 +245,7 @@ export class ReplayTimeline {
       const recording = this.recordings.get(entries[0].recordingId)!;
       this.extendTo(recording, entries[0].gen, entries);
       const chunk = this.chunks.get(key)!;
+      this.attachLateMeta(recording, chunk, entries);
       if (chunk.loaded) {
         this.merge(chunk, entries);
       } else {
@@ -280,6 +290,29 @@ export class ReplayTimeline {
       this.addLive(earlier);
     }
     return recording;
+  }
+
+  /**
+   * A gen's first mutations can arrive a few seconds before its Meta line, so
+   * live polling may have started the gen without it: the Meta, once it
+   * arrives, starts the gen (its page URL, and no dependency on the gen before).
+   */
+  private attachLateMeta(recording: RecordingState, chunk: ChunkState, entries: DecodedReplayEvent[]): void {
+    if (chunk.info.meta) {
+      return;
+    }
+    const meta = entries.find((entry) => entry.event.type === RRWEB_META);
+    if (!meta) {
+      return;
+    }
+    chunk.info.meta = meta.event;
+    chunk.info.startMs = meta.event.timestamp;
+    chunk.info.dependsOn = undefined;
+    const index = recording.gens.indexOf(chunk);
+    if (index > 0) {
+      recording.gens[index - 1].view = undefined;
+    }
+    this.changed(chunk);
   }
 
   /** New gens up to `gen`, seen whole by live polling (they started after it began). */

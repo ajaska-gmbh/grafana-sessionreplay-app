@@ -1,6 +1,10 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
-/** rrweb's Replayer, reduced to what the player calls; every instance is kept. */
+/**
+ * rrweb's Replayer, reduced to what the player calls; every instance is kept.
+ * Like rrweb, play() emits "start" and pause() emits "pause"; the skip speed
+ * survives both and ends only when skip inactivity is turned off.
+ */
 class MockReplayer {
   static instances: MockReplayer[] = [];
   readonly calls: string[] = [];
@@ -9,6 +13,8 @@ class MockReplayer {
   readonly wrapper = { style: {} as Record<string, string> };
   readonly iframe = { contentDocument: null };
   current = 0;
+  speed = 1;
+  readonly service = { state: { context: { events: this.added } } };
 
   constructor(
     readonly events: Array<{ timestamp: number }>,
@@ -25,12 +31,21 @@ class MockReplayer {
   play(offset = this.current) {
     this.current = offset;
     this.calls.push(`play ${offset}`);
+    this.emit('start');
   }
   pause(offset?: number) {
     if (offset !== undefined) {
       this.current = offset;
     }
     this.calls.push(`pause ${offset}`);
+    this.emit('pause');
+  }
+  startLive(baseline: number) {
+    this.calls.push(`live ${baseline}`);
+  }
+  getMetaData() {
+    const times = this.added.map((event) => event.timestamp);
+    return { startTime: Math.min(...times), endTime: Math.max(...times), totalTime: 0 };
   }
   addEvent(event: { timestamp: number }) {
     this.added.push(event);
@@ -38,7 +53,12 @@ class MockReplayer {
   getCurrentTime() {
     return this.current;
   }
-  setConfig() {}
+  setConfig(config: { skipInactive?: boolean }) {
+    if (config.skipInactive === false) {
+      this.speed = 1;
+    }
+    this.calls.push(`setConfig ${JSON.stringify(config)}`);
+  }
   destroy() {}
 }
 
@@ -49,11 +69,11 @@ jest.mock('@grafana/rrweb', () => ({
 }));
 
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
-import { chunksOf, indexFromLines, linesOf } from '../../lib/fixtures';
-import { ReplayTimeline } from '../../lib/replayEvents';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { chunksOf, indexFromLines, linesOf, SESSION_ID } from '../../lib/fixtures';
+import { decodeReplayLines, ReplayTimeline } from '../../lib/replayEvents';
 import { testIds } from '../testIds';
-import { ReplayPlayer } from './ReplayPlayer';
+import { FOCUS_DEBOUNCE_MS, ReplayPlayer } from './ReplayPlayer';
 
 global.ResizeObserver = class {
   observe() {}
@@ -175,5 +195,104 @@ describe('ReplayPlayer, loading progressively', () => {
 
     expect(replayer.added.map((event) => event.timestamp / MIN)).toEqual([20, 20 + 1 / MIN, 24]);
     expect(screen.queryByTestId(testIds.player.waiting)).not.toBeInTheDocument();
+  });
+
+  it('pauses at a part not loaded yet during playback, out of any fast-forward, and stops its ticker', async () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    replay.addChunk('rec1:2', all.get('rec1:2')!);
+    const { rerender } = render(<ReplayPlayer track={replay.tracks[0]} autoPlay />);
+    const [replayer] = MockReplayer.instances;
+
+    // rrweb raced at 360× past the loaded chunk into gen 1, which is not loaded.
+    replayer.speed = 360;
+    replayer.current = 6 * MIN;
+    await waitFor(() => expect(screen.getByTestId(testIds.player.waiting)).toBeInTheDocument());
+
+    expect(replayer.speed).toBe(1);
+    const calls = replayer.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Nothing more while it waits: no pause, sync or re-render every frame.
+    expect(replayer.calls.length).toBe(calls);
+
+    replay.addChunk('rec1:1', all.get('rec1:1')!);
+    rerender(<ReplayPlayer track={replay.tracks[0]} autoPlay />);
+    expect(replayer.calls[replayer.calls.length - 1]).toBe(`play ${6 * MIN}`);
+    expect(replayer.speed).toBe(1);
+    expect(screen.queryByTestId(testIds.player.waiting)).not.toBeInTheDocument();
+  });
+
+  it('passes over a loaded chunk without events instead of finishing again and again', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    replay.addChunk('rec1:1', []);
+    const { rerender } = render(<ReplayPlayer track={replay.tracks[0]} autoPlay />);
+    const [replayer] = MockReplayer.instances;
+
+    replayer.current = 4 * MIN;
+    act(() => replayer.emit('finish'));
+
+    // Gen 1 is empty: playback waits for gen 2.
+    expect(screen.getByTestId(testIds.player.waiting)).toBeInTheDocument();
+    const plays = replayer.calls.filter((call) => call.startsWith('play')).length;
+    replay.addChunk('rec1:2', all.get('rec1:2')!);
+    rerender(<ReplayPlayer track={replay.tracks[0]} autoPlay />);
+    expect(replayer.calls.filter((call) => call.startsWith('play')).length).toBe(plays + 1);
+  });
+
+  it('asks the loader for a dragged position once the thumb rests', () => {
+    jest.useFakeTimers();
+    try {
+      const replay = new ReplayTimeline(indexFromLines(lines));
+      replay.addChunk('rec1:0', all.get('rec1:0')!);
+      const onTarget = jest.fn();
+      render(<ReplayPlayer track={replay.tracks[0]} onTarget={onTarget} />);
+      onTarget.mockClear();
+      const timeline = screen.getByTestId(testIds.player.timeline);
+
+      for (const minute of [3, 6, 9, 12, 15, 18]) {
+        fireEvent.change(timeline, { target: { value: String(minute * MIN) } });
+        act(() => jest.advanceTimersByTime(FOCUS_DEBOUNCE_MS / 5));
+      }
+      expect(onTarget).not.toHaveBeenCalled();
+      act(() => jest.advanceTimersByTime(FOCUS_DEBOUNCE_MS));
+
+      expect(onTarget).toHaveBeenCalledTimes(1);
+      expect(onTarget).toHaveBeenCalledWith(18 * MIN);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('ReplayPlayer, live', () => {
+  beforeEach(() => {
+    MockReplayer.instances = [];
+  });
+
+  it('starts at the newest snapshot and never feeds it older chunks that load later', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    const { rerender } = render(<ReplayPlayer track={replay.tracks[0]} live />);
+    expect(MockReplayer.instances).toHaveLength(0);
+
+    replay.addChunk('rec1:5', all.get('rec1:5')!);
+    rerender(<ReplayPlayer track={replay.tracks[0]} live />);
+    const [replayer] = MockReplayer.instances;
+    expect(replayer.added.map((event) => event.timestamp / MIN)).toEqual([25, 25 + 1 / MIN, 29]);
+
+    // An older checkout finishes loading: rrweb would apply it at once over the live page.
+    replay.addChunk('rec1:3', all.get('rec1:3')!);
+    replay.addLive(
+      decodeReplayLines(
+        linesOf([{ event: incremental(29 * MIN + 5000) as Event, gen: 5 }]).map((entry) => ({
+          ...entry,
+          line: entry.line.replace('event_data_seq=0', 'event_data_seq=99'),
+        })),
+        SESSION_ID
+      ).decoded
+    );
+    rerender(<ReplayPlayer track={replay.tracks[0]} live />);
+
+    expect(replayer.added.map((event) => event.timestamp / MIN)).toEqual([25, 25 + 1 / MIN, 29, 29 + 5000 / MIN]);
   });
 });

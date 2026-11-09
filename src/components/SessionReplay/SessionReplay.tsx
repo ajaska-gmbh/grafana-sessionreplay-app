@@ -98,7 +98,10 @@ export function SessionReplay(props: SessionReplayProps) {
   // The link's `t` counts from where its own range started; loading starts earlier (all Metas are in the index).
   const initialOffsetMs = !current ? undefined : track !== (props.track ?? 0) ? 0 : linkOffset(current, from, t);
   const { focus } = data;
-  const onTarget = useCallback((offsetMs: number) => focus(track, live ? Infinity : offsetMs), [focus, track, live]);
+  const onTarget = useCallback(
+    (offsetMs: number) => focus(track, live ? Infinity : offsetMs, live),
+    [focus, track, live]
+  );
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {

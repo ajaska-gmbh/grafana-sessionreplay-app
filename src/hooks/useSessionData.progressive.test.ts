@@ -112,7 +112,7 @@ describe('useSessionData progressive replay', () => {
     unmount();
   });
 
-  it('re-prioritises on a seek, aborting what is no longer wanted, and cancels everything on unmount', async () => {
+  it('re-prioritises on a seek (requests still needed soon finish), and cancels everything on unmount', async () => {
     holdChunks = true;
     const { result, unmount } = renderHook(() =>
       useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range, t: 31 * MIN })
@@ -120,14 +120,17 @@ describe('useSessionData progressive replay', () => {
     await waitFor(() => expect(chunkCalls()).toHaveLength(4));
 
     act(() => result.current.focus(0, 1 * MIN));
+    // All eight chunks are among the next ones needed: what runs is not thrown away.
+    expect(chunkCalls().some((call) => call.signal!.aborted)).toBe(false);
 
-    await waitFor(() => expect(chunkCalls().map(chunkGen).slice(4)).toEqual(['0', '1', '2', '3']));
-    expect(
-      ['6', '7', '5', '4'].every((gen) => chunkCalls().find((call) => chunkGen(call) === gen)!.signal!.aborted)
-    ).toBe(true);
+    act(() => {
+      held.get('6')!.release();
+      held.get('7')!.release();
+    });
+    await waitFor(() => expect(chunkCalls().map(chunkGen).slice(4)).toEqual(['0', '1']));
 
     unmount();
-    expect(['0', '1', '2', '3'].every((gen) => held.get(gen)!.signal!.aborted)).toBe(true);
+    expect(['0', '1', '5', '4'].every((gen) => held.get(gen)!.signal!.aborted)).toBe(true);
   });
 
   it('loads every chunk in the end, at most four at a time', async () => {
@@ -174,6 +177,50 @@ describe('useSessionData progressive replay', () => {
     }
   });
 
+  it('loads only the newest chunk while live, and the rest once live is left', async () => {
+    const { result, unmount } = renderHook(() =>
+      useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range, live: true })
+    );
+    try {
+      await waitFor(() => expect(result.current.tracks[0]?.chunks[7].loaded).toBe(true));
+      // A few live polls later, still nothing older: it would only cost Loki scans.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(chunkCalls().map(chunkGen)).toEqual(['7']);
+
+      // Exit live: the player asks for a position.
+      act(() => result.current.focus(0, 2 * MIN, false));
+      await waitFor(() => expect(result.current.tracks[0].chunks.every((chunk) => chunk.loaded)).toBe(true));
+      expect(chunkGen(chunkCalls()[1])).toBe('0');
+    } finally {
+      unmount();
+    }
+  });
+
+  it('gives a failing chunk up after its retries, says so only then, and tries again on a seek there', async () => {
+    let failing = true;
+    answer = (call) => {
+      if (chunkGen(call) === '0' && failing) {
+        throw new Error('loki timeout');
+      }
+      return answerFromLines(call);
+    };
+    const { result, unmount } = renderHook(() => useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range }));
+    try {
+      await waitFor(() => expect(result.current.loadingReplay).toBe(false));
+      expect(result.current.tracks[0].chunks[0].failed).toBe(false);
+      // Retries after 1 s and 2 s.
+      await waitFor(() => expect(result.current.tracks[0].chunks[0].failed).toBe(true), { timeout: 6000 });
+      expect(chunkCalls().filter((call) => chunkGen(call) === '0')).toHaveLength(3);
+
+      failing = false;
+      act(() => result.current.focus(0, 0));
+      expect(result.current.tracks[0].chunks[0].failed).toBe(false);
+      await waitFor(() => expect(result.current.tracks[0].chunks[0].loaded).toBe(true));
+    } finally {
+      unmount();
+    }
+  }, 15_000);
+
   it('reads chunks and live lines on the session bucket where the index found the session', async () => {
     const { result, unmount } = renderHook(() =>
       useSessionData({
@@ -185,9 +232,12 @@ describe('useSessionData progressive replay', () => {
       })
     );
     try {
-      await waitFor(() => expect(result.current.tracks[0]?.chunks.every((chunk) => chunk.loaded)).toBe(true));
+      await waitFor(() => expect(result.current.tracks[0]?.chunks[7].loaded).toBe(true));
+      await waitFor(() =>
+        expect(calls.filter((call) => call.expr.endsWith(`"session_id=${SESSION}"`)).length).toBeGreaterThan(0)
+      );
       const payload = calls.filter((call) => call.expr.startsWith('{source="faro_replay", replay="payload"'));
-      expect(payload.length).toBeGreaterThan(10);
+      expect(payload.length).toBeGreaterThan(3);
       expect(payload.every((call) => /session_bucket="\d{3}"/.test(call.expr))).toBe(true);
     } finally {
       unmount();

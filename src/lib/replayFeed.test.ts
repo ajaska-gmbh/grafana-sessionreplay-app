@@ -4,6 +4,7 @@ import type { eventWithTime } from '@grafana/rrweb-types';
 import { chunksOf, indexFromLines, linesOf } from './fixtures';
 import { ReplayTimeline, type ReplayTrack } from './replayEvents';
 import {
+  afterRun,
   chunkIndexAt,
   isReady,
   nextChunkOffset,
@@ -29,8 +30,10 @@ const incremental = (timestamp: number) => ({ type: 3, timestamp, data: { source
 const MIN = 60_000;
 
 /**
- * rrweb's rule, reduced: play/pause(offset) sets the baseline; addEvent of an
- * event before the baseline is applied at once (out of order: a flashback).
+ * rrweb's rules, reduced: play/pause(offset) sets the baseline; addEvent of an
+ * event before the baseline is applied at once (out of order: a flashback),
+ * a later one is queued. A fast-forward through inactivity keeps its speed
+ * across play/pause; only turning skip inactivity off ends it (backToNormal).
  */
 class FakeReplayer implements FeedReplayer {
   events: eventWithTime[] = [];
@@ -38,6 +41,8 @@ class FakeReplayer implements FeedReplayer {
   calls: string[] = [];
   private baseline = 0;
   current = 0;
+  speed = 1;
+  skipInactive = true;
 
   constructor(private readonly startMs: number) {}
 
@@ -61,6 +66,17 @@ class FakeReplayer implements FeedReplayer {
   }
   getCurrentTime() {
     return this.current;
+  }
+  setConfig(config: { skipInactive: boolean }) {
+    this.skipInactive = config.skipInactive;
+    if (!config.skipInactive) {
+      this.speed = 1;
+    }
+    this.calls.push(`skipInactive ${config.skipInactive}`);
+  }
+  /** rrweb found inactivity ahead and fast-forwards. */
+  startSkipping() {
+    this.speed = 360;
   }
 }
 
@@ -194,11 +210,11 @@ describe('TrackFeed', () => {
     feed.initialEvents(0);
 
     expect(feed.seek(replayer, 12 * MIN, true)).toBe(false);
-    expect(replayer.calls).toEqual([`pause ${12 * MIN}`]);
+    expect(replayer.calls.filter((call) => !call.startsWith('skip'))).toEqual([`pause ${12 * MIN}`]);
 
     feed.setTrack(load(replay, 2));
     expect(feed.seek(replayer, 12 * MIN, true)).toBe(true);
-    expect(replayer.calls[1]).toBe(`play ${12 * MIN}`);
+    expect(replayer.calls[replayer.calls.length - 1]).toBe(`play ${12 * MIN}`);
     expect(times(replayer.events)).toEqual([10, 10 + 1 / MIN, 12, 14]);
   });
 
@@ -213,5 +229,92 @@ describe('TrackFeed', () => {
 
     expect(initial).toHaveLength(8);
     expect(replayer.events).toEqual([]);
+  });
+
+  it('ends a fast-forward through inactivity at every seek, keeping the setting', () => {
+    const feed = new TrackFeed(track([0, 1, 2]));
+    const replayer = new FakeReplayer(0);
+    feed.initialEvents(0);
+    replayer.play(0);
+    replayer.startSkipping();
+
+    feed.seek(replayer, 6 * MIN, true);
+
+    expect(replayer.speed).toBe(1);
+    expect(replayer.skipInactive).toBe(true);
+    // Reset before the seek plays, so it plays at normal speed.
+    expect(replayer.calls.slice(-3)).toEqual(['skipInactive false', 'skipInactive true', `play ${6 * MIN}`]);
+  });
+
+  it('leaves skip inactivity off when the user turned it off', () => {
+    const feed = new TrackFeed(track([0]));
+    feed.setSkipInactive(false);
+    const replayer = new FakeReplayer(0);
+
+    feed.seek(replayer, 1 * MIN, true);
+
+    expect(replayer.skipInactive).toBe(false);
+  });
+
+  it('pauses at a gap reached while skipping out of the fast-forward, so resuming plays at normal speed', () => {
+    // A share link an hour in, then a jump back to 5 min with chunk 2 missing.
+    const replay = timeline([1, 3]);
+    const feed = new TrackFeed(replay.tracks[0]);
+    const replayer = new FakeReplayer(0);
+    feed.initialEvents(16 * MIN);
+    replayer.play(16 * MIN);
+    feed.seek(replayer, 5 * MIN, true);
+    replayer.startSkipping();
+    replayer.current = 11 * MIN;
+    expect(readyAt(replay.tracks[0], replayer.current)).toBe(false);
+
+    feed.pauseForGap(replayer);
+    expect(replayer.speed).toBe(1);
+    feed.setTrack(load(replay, 2));
+    feed.seek(replayer, 11 * MIN, true);
+
+    expect(replayer.speed).toBe(1);
+    expect(replayer.calls[replayer.calls.length - 1]).toBe(`play ${11 * MIN}`);
+  });
+
+  it('seeks back after a seek forward: adds what the earlier target needs, once, and rebuilds there', () => {
+    const replay = timeline([3]);
+    const feed = new TrackFeed(replay.tracks[0]);
+    const replayer = new FakeReplayer(0);
+    feed.initialEvents(16 * MIN);
+    replayer.pause(16 * MIN);
+    feed.setTrack(load(replay, 0, 4));
+    feed.seek(replayer, 21 * MIN, true);
+    const forward = replayer.events.length;
+
+    feed.seek(replayer, 3 * MIN, true);
+    feed.seek(replayer, 21 * MIN, true);
+    feed.seek(replayer, 3 * MIN, false);
+
+    expect(times(replayer.events.slice(0, forward))).toEqual([20, 20 + 1 / MIN, 22, 24]);
+    // Gen 0 (its Meta is the anchor, given at creation), added once though sought to twice.
+    expect(times(replayer.events.slice(forward))).toEqual([1 / MIN, 2, 4]);
+    // Added behind the playhead (applied at once), then rebuilt by the seek that follows.
+    expect(times(replayer.appliedOutOfOrder)).toEqual([1 / MIN, 2, 4]);
+    expect(replayer.calls[replayer.calls.length - 1]).toBe(`pause ${3 * MIN}`);
+  });
+});
+
+describe('afterRun', () => {
+  it('passes over loaded chunks without events, then waits, plays on or ends', () => {
+    const replay = timeline([0, 1]);
+    const base = replay.tracks[0];
+    const emptyThird = {
+      ...base,
+      chunks: base.chunks.map((chunk) => (chunk.gen === 2 ? { ...chunk, loaded: true, events: [] } : chunk)),
+    };
+
+    expect(afterRun(base, 4 * MIN)).toEqual({ kind: 'play' });
+    expect(afterRun(emptyThird, 9 * MIN)).toEqual({ kind: 'wait', waitFor: 15 * MIN });
+    const allEmptyAfter = {
+      ...emptyThird,
+      chunks: emptyThird.chunks.map((chunk) => (chunk.gen > 2 ? { ...chunk, loaded: true, events: [] } : chunk)),
+    };
+    expect(afterRun(allEmptyAfter, 9 * MIN)).toEqual({ kind: 'end' });
   });
 });

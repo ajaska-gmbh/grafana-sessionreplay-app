@@ -108,7 +108,7 @@ describe('SessionReplay with nothing loaded but the index', () => {
     expect(lastProps().initialOffsetMs).toBe(5000);
 
     (lastProps().onTarget as (offsetMs: number) => void)(60_000);
-    expect(focus).toHaveBeenCalledWith(1, 60_000);
+    expect(focus).toHaveBeenCalledWith(1, 60_000, false);
   });
 
   it('shares a link to the moment with the tab and the loaded range', async () => {

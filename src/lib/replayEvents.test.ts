@@ -206,6 +206,28 @@ describe('ReplayTimeline', () => {
       expect(times(trackEvents(timeline.tracks[0]))).toEqual([1000, 1001, 1500, 1600]);
     });
 
+    it("gives a new gen its Meta when that arrives after the gen's first mutations", () => {
+      const timeline = loadedTimeline(initial);
+      const gen1 = linesOf(
+        recording('rec1', [{ start: 301000, increments: [301500] }]).map((entry) => ({ ...entry, gen: 1 }))
+      );
+      const decoded = decodeReplayLines(gen1, SESSION_ID).decoded.map((entry) => ({
+        ...entry,
+        key: `${entry.key}x`,
+      }));
+
+      // The mutation first: the gen starts without Meta, depending on gen 0.
+      timeline.addLive(decoded.slice(2));
+      expect(timeline.tracks[0].chunks[1]).toMatchObject({ dependsOn: 'rec1:0', startMs: 301500 });
+      timeline.addLive(decoded.slice(0, 2));
+
+      const [, chunk] = timeline.tracks[0].chunks;
+      expect(chunk).toMatchObject({ startMs: 301000, dependsOn: undefined, loaded: true });
+      expect(times(chunk.events)).toEqual([301000, 301001, 301500]);
+      expect(timeline.tracks[0].pages.map((page) => page.href)).toEqual(['https://x/rec1', 'https://x/rec1']);
+      expect(timeline.tracks[0].chunks[0].endMs).toBe(301000);
+    });
+
     it('waits for the first Meta of a new tab before it plays', () => {
       const timeline = loadedTimeline(initial);
       // Opened while the first tab still records: a second track.

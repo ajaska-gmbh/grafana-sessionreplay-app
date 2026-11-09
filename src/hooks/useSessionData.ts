@@ -6,7 +6,7 @@ import { createLokiFetcher, isAbortError, readForward, type LokiFetcher } from '
 import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
 import { linkOffset } from '../lib/playerEvents';
 import type { DecodedReplayEvent, ReplayTrack } from '../lib/replayEvents';
-import { chunkIndexAt } from '../lib/replayFeed';
+import { chunkIndexAt, withDependencies } from '../lib/replayFeed';
 import { fetchChunk, fetchReplayIndex } from '../lib/replaySource';
 import type { PayloadBuckets } from '../lib/sessionBucket';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
@@ -47,8 +47,11 @@ export interface SessionDataState {
   notFound: boolean;
 }
 
-/** Where playback is: chunks there load first, then outward from it. */
-export type FocusReplay = (track: number, offsetMs: number) => void;
+/**
+ * Where playback is: chunks there load first, then outward from it. Live:
+ * only the newest chunks load (live plays from the newest checkout on).
+ */
+export type FocusReplay = (track: number, offsetMs: number, live?: boolean) => void;
 
 /**
  * Find a session's recordings when the link carries no time range: look for
@@ -129,8 +132,13 @@ export function useSessionData(params: {
   /** The payload selector the index settled on; chunks and live mode read the same. */
   const payloadStreamRef = useRef<string>(STREAMS.payloads);
   /** The playback target: the link's until the player names one. */
-  const focusRef = useRef<{ track: number; offsetMs?: number }>({ track: params.track ?? 0 });
+  const focusRef = useRef<{ track: number; offsetMs?: number; live: boolean }>({
+    track: params.track ?? 0,
+    live,
+  });
   const linkRef = useRef({ t: params.t, live });
+  /** Publishes the store's state (set by the load effect). */
+  const publishRef = useRef<() => void>(() => undefined);
   const [state, setState] = useState<SessionDataState>({
     tracks: [],
     journey: [],
@@ -157,17 +165,36 @@ export function useSessionData(params: {
     if (!focused) {
       return;
     }
-    const offsetMs = focusRef.current.offsetMs ?? Infinity;
-    const order = [
-      ...priorityOrder(focused.chunks, chunkIndexAt(focused, offsetMs)),
-      ...tracks.filter((track) => track !== focused).flatMap((track) => track.chunks.map((chunk) => chunk.key)),
-    ];
+    const others = tracks.filter((track) => track !== focused);
+    const newest = (track: ReplayTrack) => withDependencies(track, track.chunks.length - 1).map((chunk) => chunk.key);
+    // Live plays only from the newest checkout on: older chunks would only cost
+    // Loki scans (they load once live is left and the player asks for them).
+    const order = focusRef.current.live
+      ? [...newest(focused), ...others.flatMap(newest)]
+      : [
+          ...priorityOrder(focused.chunks, chunkIndexAt(focused, focusRef.current.offsetMs ?? Infinity)),
+          ...others.flatMap((track) => track.chunks.map((chunk) => chunk.key)),
+        ];
     loader.prioritise(order.filter((key) => !store.replay.isLoaded(key)));
   }, []);
 
   const focus = useCallback<FocusReplay>(
-    (track, offsetMs) => {
-      focusRef.current = { track, offsetMs };
+    (track, offsetMs, live = false) => {
+      focusRef.current = { track, offsetMs, live };
+      // Playback wants this point: chunks there that were given up are tried again.
+      const loader = loaderRef.current;
+      const store = storeRef.current;
+      const focused = store?.tracks[track];
+      if (loader && store && focused) {
+        const failed = withDependencies(focused, chunkIndexAt(focused, offsetMs)).filter((chunk) => chunk.failed);
+        for (const chunk of failed) {
+          store.replay.retryChunk(chunk.key);
+          loader.retry(chunk.key);
+        }
+        if (failed.length > 0) {
+          publishRef.current();
+        }
+      }
       reprioritise();
     },
     [reprioritise]
@@ -195,6 +222,7 @@ export function useSessionData(params: {
         lastReplayMs: store.lastReplayMs,
         loadingChunks: loaderRef.current !== null && !loaderRef.current.idle,
       });
+    publishRef.current = publish;
 
     (async () => {
       const nowMs = Date.now();
