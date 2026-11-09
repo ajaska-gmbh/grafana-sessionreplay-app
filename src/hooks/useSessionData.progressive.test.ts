@@ -38,7 +38,7 @@ jest.mock('../lib/loki', () => {
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { linesOf } from '../lib/fixtures';
 import { META_LINE_FILTER } from '../lib/replaySource';
-import { useSessionData } from './useSessionData';
+import { liveRetryDelayMs, useSessionData } from './useSessionData';
 
 const MIN = 60_000;
 const SESSION = 'p033owWikG';
@@ -220,6 +220,32 @@ describe('useSessionData progressive replay', () => {
       unmount();
     }
   }, 15_000);
+
+  it('retries a given-up newest chunk from live polling, which plays nothing without it', async () => {
+    let failures = 0;
+    answer = (call) => {
+      if (chunkGen(call) === '7' && failures < 3) {
+        failures++;
+        throw new Error('loki timeout');
+      }
+      return answerFromLines(call);
+    };
+    const { result, unmount } = renderHook(() =>
+      useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range, live: true })
+    );
+    try {
+      // The loader's attempts (now, +1 s, +2 s), given up; the next live poll tries again.
+      await waitFor(() => expect(result.current.tracks[0]?.chunks[7].failed).toBe(true), { timeout: 6000 });
+      await waitFor(() => expect(result.current.tracks[0].chunks[7].loaded).toBe(true), { timeout: 6000 });
+      expect(chunkCalls().filter((call) => chunkGen(call) === '7')).toHaveLength(4);
+    } finally {
+      unmount();
+    }
+  }, 15_000);
+
+  it('spaces live retries of a newest chunk out: at once, then 15 s, doubling to 5 minutes', () => {
+    expect([0, 1, 2, 3, 6, 20].map(liveRetryDelayMs)).toEqual([0, 15_000, 30_000, 60_000, 300_000, 300_000]);
+  });
 
   it('reads chunks and live lines on the session bucket where the index found the session', async () => {
     const { result, unmount } = renderHook(() =>

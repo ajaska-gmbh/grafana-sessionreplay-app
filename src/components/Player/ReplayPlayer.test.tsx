@@ -265,9 +265,65 @@ describe('ReplayPlayer, loading progressively', () => {
   });
 });
 
+describe('ReplayPlayer, edge cases', () => {
+  beforeEach(() => {
+    MockReplayer.instances = [];
+  });
+
+  it('does not re-target the loader from playback while a drag is about to', () => {
+    jest.useFakeTimers();
+    try {
+      const replay = new ReplayTimeline(indexFromLines(lines));
+      ['rec1:0', 'rec1:1', 'rec1:2'].forEach((key) => replay.addChunk(key, all.get(key)!));
+      const onTarget = jest.fn();
+      render(<ReplayPlayer track={replay.tracks[0]} onTarget={onTarget} autoPlay />);
+      const [replayer] = MockReplayer.instances;
+      onTarget.mockClear();
+
+      fireEvent.change(screen.getByTestId(testIds.player.timeline), { target: { value: String(12 * MIN) } });
+      // Playback runs on into another chunk while the thumb has not rested yet.
+      replayer.current = 6 * MIN;
+      act(() => jest.advanceTimersByTime(FOCUS_DEBOUNCE_MS / 2));
+      expect(onTarget).not.toHaveBeenCalled();
+
+      act(() => jest.advanceTimersByTime(FOCUS_DEBOUNCE_MS));
+      // The drag's target first; only then playback's own position again.
+      expect(onTarget.mock.calls[0]).toEqual([12 * MIN]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('says nothing was recorded where the start chunk is loaded but empty and nothing follows', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    ['rec1:4', 'rec1:5'].forEach((key) => replay.addChunk(key, []));
+
+    render(<ReplayPlayer track={replay.tracks[0]} initialOffsetMs={26 * MIN} />);
+
+    expect(screen.getByTestId(testIds.player.waiting)).toHaveTextContent('Nothing was recorded here.');
+    expect(MockReplayer.instances).toHaveLength(0);
+  });
+});
+
 describe('ReplayPlayer, live', () => {
   beforeEach(() => {
     MockReplayer.instances = [];
+  });
+
+  it('says it waits for the newest chunk, and that it retries one that failed', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    const { rerender } = render(<ReplayPlayer track={replay.tracks[0]} live />);
+    expect(screen.getByTestId(testIds.player.waiting)).toHaveTextContent('Loading…');
+
+    replay.failChunk('rec1:5');
+    rerender(<ReplayPlayer track={replay.tracks[0]} live />);
+    expect(screen.getByTestId(testIds.player.waiting)).toHaveTextContent('retrying');
+
+    replay.retryChunk('rec1:5');
+    replay.addChunk('rec1:5', all.get('rec1:5')!);
+    rerender(<ReplayPlayer track={replay.tracks[0]} live />);
+    expect(screen.queryByTestId(testIds.player.waiting)).not.toBeInTheDocument();
+    expect(MockReplayer.instances).toHaveLength(1);
   });
 
   it('starts at the newest snapshot and never feeds it older chunks that load later', () => {

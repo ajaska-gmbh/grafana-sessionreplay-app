@@ -20,7 +20,16 @@ import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
 import { liveStartIndex, pageAt } from '../../lib/playerEvents';
 import type { ReplayTrack } from '../../lib/replayEvents';
-import { afterRun, chunkIndexAt, isReady, readyAt, trackLength, TrackFeed, unloadedSpans } from '../../lib/replayFeed';
+import {
+  afterRun,
+  chunkIndexAt,
+  isReady,
+  readyAt,
+  withDependencies,
+  trackLength,
+  TrackFeed,
+  unloadedSpans,
+} from '../../lib/replayFeed';
 import { PlayerClock, useClockEffect, useClockValue } from '../../lib/playerClock';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
@@ -78,10 +87,20 @@ interface PageInfo {
 }
 
 /** Why the stage shows no playback right now. */
-type Waiting = 'loading' | 'failed' | undefined;
+type Waiting = 'loading' | 'failed' | 'empty' | undefined;
 
 /** Finishing this close to the end is the end; earlier, the next chunk is still loading. */
 const END_TOLERANCE_MS = 1000;
+const WAITING_TEXT = {
+  loading: 'Loading…',
+  failed: 'This part of the recording could not be loaded. Seek here again to retry.',
+  empty: 'Nothing was recorded here.',
+};
+const LIVE_WAITING_TEXT = {
+  ...WAITING_TEXT,
+  failed: 'The newest part of the recording could not be loaded yet; retrying…',
+};
+
 /** A timeline drag asks the loader for its target once the thumb rested this long. */
 export const FOCUS_DEBOUNCE_MS = 250;
 
@@ -182,6 +201,18 @@ export function ReplayPlayer({
 
   /** Live plays one flat list, from the newest snapshot on. */
   const liveEvents = useMemo(() => (live ? track.chunks.flatMap((chunk) => chunk.events) : []), [live, track]);
+  /** Live waits for the newest chunk (and what it depends on); live polling retries it. */
+  const liveWaiting = useMemo((): Waiting => {
+    if (!live || track.chunks.length === 0) {
+      return undefined;
+    }
+    const newest = withDependencies(track, track.chunks.length - 1);
+    if (newest.every((chunk) => chunk.loaded)) {
+      return undefined;
+    }
+    return newest.some((chunk) => chunk.failed) ? 'failed' : 'loading';
+  }, [live, track]);
+  const shownWaiting = live ? liveWaiting : waiting;
   const unloaded = useMemo(() => (live ? [] : unloadedSpans(track)), [live, track]);
   const audioSegments = useMemo(
     () => (startTime === undefined || total <= 0 ? [] : toTimelineSegments(audioLevels, startTime, total)),
@@ -250,6 +281,10 @@ export function ReplayPlayer({
     requestAnimationFrame(() => syncRef.current());
   }, []);
 
+  /** Dragging the timeline: tell the loader once the thumb rests, not at every step. */
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(focusTimerRef.current), []);
+
   /** Tells the loader where playback is, once per chunk entered. */
   const focusAt = useCallback((offsetMs: number, force = false) => {
     const index = chunkIndexAt(trackRef.current, offsetMs);
@@ -284,7 +319,10 @@ export function ReplayPlayer({
       const replayer = replayerRef.current;
       if (!live && replayer) {
         const offsetMs = replayer.getCurrentTime();
-        focusAt(offsetMs);
+        // While a drag is about to name a target, playing on must not re-target the loader.
+        if (focusTimerRef.current === undefined) {
+          focusAt(offsetMs);
+        }
         // A part not loaded yet (reached by playing, or raced to by skip
         // inactivity): wait there instead of playing an incomplete page.
         if (!readyAt(trackRef.current, offsetMs)) {
@@ -415,7 +453,14 @@ export function ReplayPlayer({
     const start = pendingOffsetRef.current;
     const initial = feed.initialEvents(start);
     if (!initial) {
-      showWaiting(start, start);
+      const current = trackRef.current;
+      if (readyAt(current, start) && afterRun(current, start).kind === 'end') {
+        // Loaded, and nothing to play from here on.
+        waitRef.current = { offsetMs: start, untilMs: start };
+        setWaiting('empty');
+      } else {
+        showWaiting(start, start);
+      }
       syncRef.current();
       return false;
     }
@@ -497,17 +542,17 @@ export function ReplayPlayer({
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  /** Dragging the timeline: tell the loader once the thumb rests, not at every step. */
-  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(focusTimerRef.current), []);
-
   /** Go to `offsetMs` (clamped to the track), playing if playback is wanted; waits there while it loads. */
   const goToOffset = useCallback(
     (target: number, play: boolean, dragging = false) => {
       const clamped = Math.max(0, Math.min(target, trackLength(trackRef.current)));
       clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = undefined;
       if (dragging) {
-        focusTimerRef.current = setTimeout(() => focusAt(clamped, true), FOCUS_DEBOUNCE_MS);
+        focusTimerRef.current = setTimeout(() => {
+          focusTimerRef.current = undefined;
+          focusAt(clamped, true);
+        }, FOCUS_DEBOUNCE_MS);
       } else {
         focusAt(clamped, true);
       }
@@ -612,11 +657,9 @@ export function ReplayPlayer({
       <div ref={stageRef} className={styles.stage}>
         <div ref={mountRef} />
         {skipping && <div className={styles.skipping}>Skipping inactivity…</div>}
-        {!live && waiting && (
+        {shownWaiting && (
           <div className={styles.waiting} data-testid={testIds.player.waiting}>
-            {waiting === 'failed'
-              ? 'This part of the recording could not be loaded. Seek here again to retry.'
-              : 'Loading…'}
+            {(live ? LIVE_WAITING_TEXT : WAITING_TEXT)[shownWaiting]}
           </div>
         )}
       </div>

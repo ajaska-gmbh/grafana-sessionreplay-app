@@ -17,6 +17,15 @@ import { audioLevelsQuery, type AudioLevelWindow } from '../lib/audioLevels';
 /** How often live mode asks Loki for new events. */
 export const LIVE_POLL_MS = 3000;
 
+/**
+ * Live retries a given-up newest chunk (it plays nothing without it) after
+ * this pause, doubled for every further round, at most 5 minutes; each round
+ * is the loader's own attempts with their pauses.
+ */
+export function liveRetryDelayMs(rounds: number): number {
+  return rounds === 0 ? 0 : Math.min(5 * 60 * 1000, 15_000 * 2 ** (rounds - 1));
+}
+
 export interface SessionDataState {
   /** Resolved time range of the session (epoch ms). */
   range?: { from: number; to: number };
@@ -356,6 +365,30 @@ export function useSessionData(params: {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
+    /** Given-up newest chunks: retried with growing pauses (live shows nothing without them). */
+    const rounds = new Map<string, { atMs: number; count: number }>();
+    const retryNewest = (nowMs: number) => {
+      const loader = loaderRef.current;
+      if (!loader) {
+        return;
+      }
+      let retried = false;
+      for (const track of store.tracks) {
+        for (const chunk of withDependencies(track, track.chunks.length - 1)) {
+          const last = rounds.get(chunk.key) ?? { atMs: 0, count: 0 };
+          if (chunk.failed && nowMs - last.atMs >= liveRetryDelayMs(last.count)) {
+            rounds.set(chunk.key, { atMs: nowMs, count: last.count + 1 });
+            store.replay.retryChunk(chunk.key);
+            loader.retry(chunk.key);
+            retried = true;
+          }
+        }
+      }
+      if (retried) {
+        publishRef.current();
+      }
+    };
+
     const poll = async () => {
       const nowMs = Date.now();
       const fallbackMs = nowMs - LIVE_POLL_MS * 2;
@@ -387,6 +420,7 @@ export function useSessionData(params: {
         if (!cancelled) {
           // A new reload or tab adds chunks: keep the loader's order complete.
           reprioritise();
+          retryNewest(nowMs);
           setState((previous) => ({
             ...previous,
             tracks: store.tracks,
