@@ -1,4 +1,4 @@
-import { appFilter, STREAMS } from './logql';
+import { appFilter, appLineFilter, STREAMS } from './logql';
 import { logqlString } from './loki';
 
 /** A search field is a Faro event attribute name; Faro writes it as `event_data_<name>`. */
@@ -29,7 +29,7 @@ export function searchValue(text: string): string | undefined {
 export function sessionSearchQuery(fields: string[], value: string, apps: string[], rangeSeconds: number): string {
   const exact = fields.map((field) => `event_data_${field}=${logqlString(value)}`).join(' or ');
   return (
-    `sum by (session_id) (count_over_time(${STREAMS.faro}${appFilter(apps)}` +
+    `sum by (session_id) (count_over_time(${STREAMS.faro}${appLineFilter(apps)}${appFilter(apps)}` +
     ` |= "kind=event" |= ${logqlString(value)} | logfmt | ${exact} [${rangeSeconds}s]))`
   );
 }

@@ -38,6 +38,23 @@ export function appFilter(apps: string[]): string {
 }
 
 /**
+ * Line filter for the selected apps, for queries that parse lines (`| logfmt`):
+ * a line filter runs before the parser, so lines of other apps are dropped
+ * without being parsed, and it holds even where the structured metadata lacks
+ * the app (Alloy's logfmt stage skips lines over 64 KiB). Faro writes
+ * `app_name=<name>` between spaces on every line. Empty for all apps.
+ */
+export function appLineFilter(apps: string[]): string {
+  if (apps.length === 0) {
+    return '';
+  }
+  if (apps.length === 1) {
+    return ` |= ${logqlString(` app_name=${apps[0]} `)}`;
+  }
+  return ` |~ ${logqlString(` app_name=(?:${apps.map(regexEscape).join('|')}) `)}`;
+}
+
+/**
  * Line filter that narrows a query to one session before parsing. Session ids
  * are unique across apps, so no app filter is needed. Callers still compare
  * the parsed `session_id`, because the filter also matches as a prefix.

@@ -9,7 +9,7 @@ describe('session search', () => {
 
   it('narrows to the selected apps', () => {
     expect(sessionSearchQuery(['lead_id'], 'x', ['ppd-leads-frontend'], 60)).toContain(
-      '| app_name=~"ppd-leads-frontend"'
+      '{source="faro"} |= " app_name=ppd-leads-frontend " | app_name=~"ppd-leads-frontend" |= "kind=event"'
     );
   });
 

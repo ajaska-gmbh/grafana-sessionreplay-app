@@ -1,4 +1,3 @@
-import { lastValueFrom } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
 import { LOKI_PAGE_SIZE } from '../constants';
 import type { LokiLine } from '../types';
@@ -25,7 +24,22 @@ export type LokiFetcher = (args: {
   toMs: number;
   limit: number;
   direction: Direction;
+  /** Aborting cancels the request in flight (the promise rejects with an AbortError). */
+  signal?: AbortSignal;
 }) => Promise<LokiLine[]>;
+
+/** The error an aborted request or read rejects with. */
+export function abortError(): Error {
+  const error = new Error('The request was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (error as { name?: string })?.name === 'AbortError';
+}
+
+let requestCounter = 0;
 
 /**
  * Quote a value for a LogQL string literal (line filters and matchers).
@@ -70,33 +84,64 @@ export function framesToLines(response: DsQueryResponse): LokiLine[] {
   return lines;
 }
 
-/** Fetcher that runs LogQL through Grafana's /api/ds/query (respects datasource access). */
+/**
+ * Fetcher that runs LogQL through Grafana's /api/ds/query (respects datasource
+ * access). Every request has its own requestId, so Grafana never cancels one
+ * request for another; aborting `signal` unsubscribes, which cancels the HTTP
+ * request.
+ */
 export function createLokiFetcher(datasourceUid: string): LokiFetcher {
-  return async ({ expr, fromMs, toMs, limit, direction }) => {
-    const response = await lastValueFrom(
-      getBackendSrv().fetch<DsQueryResponse>({
-        url: '/api/ds/query',
-        method: 'POST',
-        data: {
-          from: String(Math.floor(fromMs)),
-          to: String(Math.ceil(toMs)),
-          queries: [
-            {
-              refId: 'A',
-              datasource: { uid: datasourceUid, type: 'loki' },
-              expr,
-              queryType: 'range',
-              maxLines: limit,
-              direction,
-            },
-          ],
-        },
-        showErrorAlert: false,
-      })
-    );
-
-    return framesToLines(response.data);
-  };
+  return ({ expr, fromMs, toMs, limit, direction, signal }) =>
+    new Promise<LokiLine[]>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError());
+        return;
+      }
+      let response: DsQueryResponse | undefined;
+      const onAbort = () => {
+        subscription.unsubscribe();
+        reject(abortError());
+      };
+      const subscription = getBackendSrv()
+        .fetch<DsQueryResponse>({
+          url: '/api/ds/query',
+          method: 'POST',
+          requestId: `sessionreplay-${++requestCounter}`,
+          data: {
+            from: String(Math.floor(fromMs)),
+            to: String(Math.ceil(toMs)),
+            queries: [
+              {
+                refId: 'A',
+                datasource: { uid: datasourceUid, type: 'loki' },
+                expr,
+                queryType: 'range',
+                maxLines: limit,
+                direction,
+              },
+            ],
+          },
+          showErrorAlert: false,
+        })
+        .subscribe({
+          next: (value) => {
+            response = value.data;
+          },
+          error: (error: unknown) => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(error);
+          },
+          complete: () => {
+            signal?.removeEventListener('abort', onAbort);
+            try {
+              resolve(framesToLines(response ?? {}));
+            } catch (error) {
+              reject(error);
+            }
+          },
+        });
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
 }
 
 /** Compare two nanosecond timestamps given as decimal strings. */
@@ -118,14 +163,18 @@ export async function* readForward(
   expr: string,
   fromMs: number,
   toMs: number,
-  pageSize = LOKI_PAGE_SIZE
+  pageSize = LOKI_PAGE_SIZE,
+  signal?: AbortSignal
 ): AsyncGenerator<LokiLine[]> {
   let startMs = fromMs;
   let boundaryNs: string | undefined;
   let seenAtBoundary = new Set<string>();
 
   for (;;) {
-    const page = await fetcher({ expr, fromMs: startMs, toMs, limit: pageSize, direction: 'forward' });
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    const page = await fetcher({ expr, fromMs: startMs, toMs, limit: pageSize, direction: 'forward', signal });
     page.sort((a, b) => compareNs(a.tsNs, b.tsNs));
 
     // The next page restarts at the boundary's millisecond, so it repeats

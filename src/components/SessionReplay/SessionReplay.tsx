@@ -74,7 +74,16 @@ export function SessionReplay(props: SessionReplayProps) {
   const { appName, sessionId, from, to, t, lokiUid, tempoUid, height = '100%' } = props;
   const styles = useStyles2(getStyles);
   const [live, setLive] = useState(props.live ?? false);
-  const data = useSessionData({ lokiUid, sessionId, from, to, live, payloadBuckets: props.payloadBuckets });
+  const data = useSessionData({
+    lokiUid,
+    sessionId,
+    from,
+    to,
+    t,
+    track: props.track,
+    live,
+    payloadBuckets: props.payloadBuckets,
+  });
   const now = useNow();
   const sinceLastEventMs = data.lastReplayMs !== undefined ? now - data.lastReplayMs : undefined;
   const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;
@@ -84,11 +93,15 @@ export function SessionReplay(props: SessionReplayProps) {
   const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
 
   const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
-  const events = useMemo(() => data.tracks[track] ?? [], [data.tracks, track]);
-  const recordingStartMs = events[0]?.timestamp;
-  // The link's `t` counts from where its own range started; loading may start earlier.
-  const linkStartOffset = linkOffset(events, from, t);
-  const initialOffsetMs = track !== (props.track ?? 0) ? 0 : (linkStartOffset ?? (data.loadingReplay ? undefined : t));
+  const current = data.tracks[track];
+  const recordingStartMs = current?.startMs;
+  // The link's `t` counts from where its own range started; loading starts earlier (all Metas are in the index).
+  const initialOffsetMs = !current ? undefined : track !== (props.track ?? 0) ? 0 : linkOffset(current, from, t);
+  const { focus } = data;
+  const onTarget = useCallback(
+    (offsetMs: number) => focus(track, live ? Infinity : offsetMs, live),
+    [focus, track, live]
+  );
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
@@ -172,7 +185,7 @@ export function SessionReplay(props: SessionReplayProps) {
     );
   }
 
-  const noRecording = !data.loadingReplay && events.length === 0;
+  const noRecording = !data.loadingReplay && !current;
 
   return (
     <div className={styles.layout} style={{ height }} data-testid={testIds.replay.container}>
@@ -191,7 +204,7 @@ export function SessionReplay(props: SessionReplayProps) {
             />
           </div>
         )}
-        {(active || live) && events.length > 0 && (
+        {(active || live) && current && (
           <div className={styles.liveBar}>
             {live ? (
               <span>
@@ -211,10 +224,11 @@ export function SessionReplay(props: SessionReplayProps) {
             )}
           </div>
         )}
-        {events.length > 0 && initialOffsetMs !== undefined ? (
+        {current && initialOffsetMs !== undefined ? (
           <ReplayPlayer
             key={`${track}-${live ? 'live' : 'replay'}`}
-            events={events}
+            track={current}
+            onTarget={onTarget}
             initialOffsetMs={initialOffsetMs}
             seekRequest={seekRequest ?? matchSeek}
             markers={markers}
@@ -230,7 +244,7 @@ export function SessionReplay(props: SessionReplayProps) {
           />
         ) : noRecording ? (
           <Alert severity="info" title="Nothing to replay">
-            This session has no complete recording (no full page snapshot) in the selected time range.
+            This session has no complete recording (no page snapshot) in the selected time range.
           </Alert>
         ) : (
           <LoadingPlaceholder text="Loading recording…" />

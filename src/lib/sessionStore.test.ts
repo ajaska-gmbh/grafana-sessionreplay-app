@@ -7,7 +7,7 @@ jest.mock('./audioLevels', () => {
 
 import { parseAudioLevelLine } from './audioLevels';
 import { LIVE_WINDOW_MS, SessionStore } from './sessionStore';
-import { fetchLine, logLine, replayLine, SESSION_ID } from './fixtures';
+import { chunksOf, fetchLine, indexFromLines, logLine, replayLine, SESSION_ID, trackEvents } from './fixtures';
 
 const meta = (timestamp: number) => ({ type: 4, timestamp, data: { href: 'https://x/', width: 1, height: 1 } });
 const snapshot = (timestamp: number) => ({
@@ -18,7 +18,7 @@ const snapshot = (timestamp: number) => ({
 const incremental = (timestamp: number) => ({ type: 3, timestamp, data: { source: 1, positions: [] } });
 
 describe('SessionStore', () => {
-  it('keeps polls that overlap the previous page free of duplicates', () => {
+  it('continues live where the index ended, free of duplicates where polls overlap', () => {
     const store = new SessionStore(SESSION_ID);
     const first = [
       { tsNs: '1000000000001', line: replayLine(meta(1000), { seq: 0 }) },
@@ -30,12 +30,14 @@ describe('SessionStore', () => {
       { tsNs: '1003000000000', line: replayLine(incremental(1500), { seq: 2 }) },
     ];
 
-    store.addReplayLines(first);
+    store.setIndex(indexFromLines(first));
     expect(store.replayCursorMs(0)).toBe(1000000);
+    expect(store.lastReplayMs).toBe(1000000);
+    store.replay.addChunk('rec1:0', chunksOf(first).get('rec1:0')!);
     store.addReplayLines(second);
 
     expect(store.tracks).toHaveLength(1);
-    expect(store.tracks[0].map((event) => event.timestamp)).toEqual([1000, 1001, 1500]);
+    expect(trackEvents(store.tracks[0]).map((event) => event.timestamp)).toEqual([1000, 1001, 1500]);
     expect(store.replayCursorMs(0)).toBe(1003000);
     expect(store.lastReplayMs).toBe(1003000);
   });
@@ -97,7 +99,7 @@ describe('SessionStore', () => {
 
   it('is active while replay data arrived within the live window', () => {
     const store = new SessionStore(SESSION_ID);
-    store.addReplayLines([{ tsNs: '1000000000000000', line: replayLine(meta(1)) }]);
+    store.setIndex(indexFromLines([{ tsNs: '1000000000000000', line: replayLine(meta(1)) }]));
 
     expect(store.isActive(1_000_000_000 + LIVE_WINDOW_MS - 1)).toBe(true);
     expect(store.isActive(1_000_000_000 + LIVE_WINDOW_MS + 1)).toBe(false);

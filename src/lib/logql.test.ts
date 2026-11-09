@@ -1,6 +1,6 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
-import { appFilter, eventLineFilter, regexEscape, sessionLineFilter, STREAMS } from './logql';
+import { appFilter, appLineFilter, eventLineFilter, regexEscape, sessionLineFilter, STREAMS } from './logql';
 
 describe('logql', () => {
   it('uses only the fixed Faro streams', () => {
@@ -15,6 +15,12 @@ describe('logql', () => {
     expect(appFilter([])).toBe('');
     expect(appFilter(['ppd-leads-frontend', 'a.b'])).toBe(' | app_name=~"ppd-leads-frontend|a\\\\.b"');
     expect(regexEscape('a+b(c)')).toBe('a\\+b\\(c\\)');
+  });
+
+  it('filters apps by line before a parser, exact by the spaces around', () => {
+    expect(appLineFilter([])).toBe('');
+    expect(appLineFilter(['ppd-leads-frontend'])).toBe(' |= " app_name=ppd-leads-frontend "');
+    expect(appLineFilter(['a', 'b.c'])).toBe(' |~ " app_name=(?:a|b\\\\.c) "');
   });
 
   it('builds quoted line filters', () => {

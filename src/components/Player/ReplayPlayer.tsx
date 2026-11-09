@@ -18,7 +18,18 @@ import {
 } from '@grafana/ui';
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
-import { liveStartIndex, pageAt, pageChanges } from '../../lib/playerEvents';
+import { liveStartIndex, pageAt } from '../../lib/playerEvents';
+import type { ReplayTrack } from '../../lib/replayEvents';
+import {
+  afterRun,
+  chunkIndexAt,
+  isReady,
+  readyAt,
+  withDependencies,
+  trackLength,
+  TrackFeed,
+  unloadedSpans,
+} from '../../lib/replayFeed';
 import { PlayerClock, useClockEffect, useClockValue } from '../../lib/playerClock';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
@@ -44,7 +55,8 @@ export interface SeekRequest {
 }
 
 export interface ReplayPlayerProps {
-  events: eventWithTime[];
+  /** The tab to play: its full length is known, its chunks fill in as they load. */
+  track: ReplayTrack;
   /** Start position in ms from the recording start (the `t` URL parameter). */
   initialOffsetMs?: number;
   seekRequest?: SeekRequest;
@@ -56,6 +68,8 @@ export interface ReplayPlayerProps {
   /** More rows on the timeline's axis, under the level graph (the call audio); they follow `clock`. */
   belowTimeline?: React.ReactNode;
   onShare?: (offsetMs: number) => Promise<void> | void;
+  /** Where playback is or is going (seeks, the playhead entering another chunk): load there first. */
+  onTarget?: (offsetMs: number) => void;
   autoPlay?: boolean;
   /**
    * Follow the session as it is recorded: starts at the last full snapshot and
@@ -72,13 +86,36 @@ interface PageInfo {
   url?: string;
 }
 
+/** Why the stage shows no playback right now. */
+type Waiting = 'loading' | 'failed' | 'empty' | undefined;
+
+/** Finishing this close to the end is the end; earlier, the next chunk is still loading. */
+const END_TOLERANCE_MS = 1000;
+const WAITING_TEXT = {
+  loading: 'Loading…',
+  failed: 'This part of the recording could not be loaded. Seek here again to retry.',
+  empty: 'Nothing was recorded here.',
+};
+const LIVE_WAITING_TEXT = {
+  ...WAITING_TEXT,
+  failed: 'The newest part of the recording could not be loaded yet; retrying…',
+};
+
+/** A timeline drag asks the loader for its target once the thumb rested this long. */
+export const FOCUS_DEBOUNCE_MS = 250;
+
 /**
  * rrweb replayer with Grafana-style controls: elapsed/total time, play/pause,
  * skip ±10s, timeline, speed, skip inactivity, share link and fullscreen.
  * The page title and URL at the current position are shown above the player.
+ *
+ * The track loads progressively: length, seek range and markers come from its
+ * index at once; the replayer starts once the chunk at the start position is
+ * loaded, chunks join it as they arrive (see TrackFeed), and playback pauses
+ * with "Loading…" where it reaches a part not loaded yet, resuming when it is.
  */
 export function ReplayPlayer({
-  events,
+  track,
   initialOffsetMs = 0,
   seekRequest,
   markers = [],
@@ -86,6 +123,7 @@ export function ReplayPlayer({
   clock: givenClock,
   belowTimeline,
   onShare,
+  onTarget,
   autoPlay = false,
   live = false,
   liveReceivedAtMs,
@@ -104,19 +142,39 @@ export function ReplayPlayer({
   const [ownClock] = useState(() => new PlayerClock());
   const clock = givenClock ?? ownClock;
 
-  const [playing, setPlaying] = useState(false);
-  // Read by the effect that appends events, which must not re-run on play/pause.
-  const playingRef = useRef(false);
+  // The latest track for callbacks registered once (replayer events, the ticker).
+  const trackRef = useRef(track);
+  const [feed] = useState(() => new TrackFeed(track));
+  /** Where to start once the replayer can be created (seeks before that move it). */
+  const pendingOffsetRef = useRef(Math.max(0, initialOffsetMs));
+  /** Playback paused at a part still loading: where, and from where on it must be loaded to go on. */
+  const waitRef = useRef<{ offsetMs: number; untilMs: number } | null>(null);
+  const [waiting, setWaiting] = useState<Waiting>(undefined);
+  const onTargetRef = useRef(onTarget);
+  const focusedChunkRef = useRef(-1);
   useEffect(() => {
-    playingRef.current = playing;
+    onTargetRef.current = onTarget;
+  }, [onTarget]);
+
+  const [playing, setPlaying] = useState(false);
+  /** The user wants playback (also while it waits for a chunk). */
+  const [wantPlay, setWantPlay] = useState(autoPlay);
+  const wantPlayRef = useRef(autoPlay);
+  const setWant = useCallback((value: boolean) => {
+    wantPlayRef.current = value;
+    setWantPlay(value);
+  }, []);
+  useEffect(() => {
     clock.update({ playing });
   }, [playing, clock]);
   // Only what is shown re-renders: the whole second, the length, the start. The
   // range input follows every frame through its ref (see the clock effect below).
   const second = useClockValue(clock, (state) => Math.floor(state.offsetMs / 1000));
-  const total = useClockValue(clock, (state) => state.totalMs);
   const startTime = useClockValue(clock, (state) => state.startTimeMs);
+  const liveTotal = useClockValue(clock, (state) => state.totalMs);
   const clockOffset = useClockValue(clock, (state) => state.clockOffsetMs);
+  /** The track's length from its index (live: what the replayer has). */
+  const total = live ? liveTotal : trackLength(track);
   /** The recording start on the server's clock: every time of day shown or typed counts from it. */
   const startTimeOfDay = startTime === undefined ? undefined : startTime + clockOffset;
   const offset = second * 1000;
@@ -125,18 +183,37 @@ export function ReplayPlayer({
   const [goToInvalid, setGoToInvalid] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [skipInactive, setSkipInactive] = useState(true);
+  // Read when the replayer is created, which happens outside render.
+  const speedRef = useRef(1);
+  const skipInactiveRef = useRef(true);
   const [skipping, setSkipping] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [page, setPage] = useState<PageInfo>({});
   /** Live: how far playback trails the newest received event (ms). */
   const [liveLagMs, setLiveLagMs] = useState(0);
   const newestEventRef = useRef(0);
+  /** Live: rrweb time of the snapshot live playback started from. */
+  const liveBaselineRef = useRef(Infinity);
   const receivedAtRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     receivedAtRef.current = liveReceivedAtMs;
   }, [liveReceivedAtMs]);
 
-  const pages = useMemo(() => pageChanges(events), [events]);
+  /** Live plays one flat list, from the newest snapshot on. */
+  const liveEvents = useMemo(() => (live ? track.chunks.flatMap((chunk) => chunk.events) : []), [live, track]);
+  /** Live waits for the newest chunk (and what it depends on); live polling retries it. */
+  const liveWaiting = useMemo((): Waiting => {
+    if (!live || track.chunks.length === 0) {
+      return undefined;
+    }
+    const newest = withDependencies(track, track.chunks.length - 1);
+    if (newest.every((chunk) => chunk.loaded)) {
+      return undefined;
+    }
+    return newest.some((chunk) => chunk.failed) ? 'failed' : 'loading';
+  }, [live, track]);
+  const shownWaiting = live ? liveWaiting : waiting;
+  const unloaded = useMemo(() => (live ? [] : unloadedSpans(track)), [live, track]);
   const audioSegments = useMemo(
     () => (startTime === undefined || total <= 0 ? [] : toTimelineSegments(audioLevels, startTime, total)),
     [audioLevels, startTime, total]
@@ -159,24 +236,32 @@ export function ReplayPlayer({
 
   const syncTime = useCallback(() => {
     const replayer = replayerRef.current;
-    // In live mode rrweb adds events asynchronously; its metadata needs at least one.
-    if (!replayer || replayer.service.state.context.events.length === 0) {
-      return;
-    }
-    const meta = replayer.getMetaData();
-    const current = Math.min(replayer.getCurrentTime(), meta.totalTime);
-    clock.update({ offsetMs: current, totalMs: meta.totalTime, startTimeMs: meta.startTime });
     if (live) {
+      // In live mode rrweb adds events asynchronously; its metadata needs at least one.
+      if (!replayer || replayer.service.state.context.events.length === 0) {
+        return;
+      }
+      const meta = replayer.getMetaData();
+      const current = Math.min(replayer.getCurrentTime(), meta.totalTime);
+      clock.update({ offsetMs: current, totalMs: meta.totalTime, startTimeMs: meta.startTime });
       // Playback trails the newest event (buffer), which itself arrived some time ago.
       const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
       const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;
       const lag = behindNewest + sinceReceived;
       setLiveLagMs((previous) => (Math.round(previous / 1000) === Math.round(lag / 1000) ? previous : lag));
+      const url = pageAt(trackRef.current.pages, meta.startTime + current);
+      const title = replayer.iframe.contentDocument?.title || undefined;
+      setPage((previous) => (previous.url === url && previous.title === title ? previous : { url, title }));
+      return;
     }
-    const url = pageAt(pages, meta.startTime + current);
-    const title = replayer.iframe.contentDocument?.title || undefined;
+    const current = trackRef.current;
+    const length = trackLength(current);
+    const offsetMs = Math.min(replayer ? replayer.getCurrentTime() : pendingOffsetRef.current, length);
+    clock.update({ offsetMs, totalMs: length, startTimeMs: current.startMs });
+    const url = pageAt(current.pages, current.startMs + offsetMs);
+    const title = replayer?.iframe.contentDocument?.title || undefined;
     setPage((previous) => (previous.url === url && previous.title === title ? previous : { url, title }));
-  }, [pages, live, clock]);
+  }, [live, clock]);
 
   // The timeline's thumb follows every frame without re-rendering the player.
   useClockEffect(clock, (state) => {
@@ -196,6 +281,31 @@ export function ReplayPlayer({
     requestAnimationFrame(() => syncRef.current());
   }, []);
 
+  /** Dragging the timeline: tell the loader once the thumb rests, not at every step. */
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(focusTimerRef.current), []);
+
+  /** Tells the loader where playback is, once per chunk entered. */
+  const focusAt = useCallback((offsetMs: number, force = false) => {
+    const index = chunkIndexAt(trackRef.current, offsetMs);
+    if (force || index !== focusedChunkRef.current) {
+      focusedChunkRef.current = index;
+      onTargetRef.current?.(offsetMs);
+    }
+  }, []);
+
+  /** Shows why nothing plays at `offsetMs`: still loading, or given up after retries. */
+  const showWaiting = useCallback((offsetMs: number, untilMs: number) => {
+    waitRef.current = { offsetMs, untilMs };
+    const chunk = trackRef.current.chunks[chunkIndexAt(trackRef.current, untilMs)];
+    setWaiting(chunk?.failed ? 'failed' : 'loading');
+  }, []);
+
+  const stopWaiting = useCallback(() => {
+    waitRef.current = null;
+    setWaiting(undefined);
+  }, []);
+
   const stopTicker = useCallback(() => {
     if (frameRef.current !== null) {
       cancelAnimationFrame(frameRef.current);
@@ -206,23 +316,91 @@ export function ReplayPlayer({
   const startTicker = useCallback(() => {
     stopTicker();
     const tick = () => {
+      const replayer = replayerRef.current;
+      if (!live && replayer) {
+        const offsetMs = replayer.getCurrentTime();
+        // While a drag is about to name a target, playing on must not re-target the loader.
+        if (focusTimerRef.current === undefined) {
+          focusAt(offsetMs);
+        }
+        // A part not loaded yet (reached by playing, or raced to by skip
+        // inactivity): wait there instead of playing an incomplete page.
+        if (!readyAt(trackRef.current, offsetMs)) {
+          // Stops the ticker too; the chunk's arrival resumes playback (and it).
+          feed.pauseForGap(replayer);
+          showWaiting(offsetMs, offsetMs);
+          stopTicker();
+          syncRef.current();
+          return;
+        }
+      }
       syncRef.current();
       frameRef.current = requestAnimationFrame(tick);
     };
     frameRef.current = requestAnimationFrame(tick);
-  }, [stopTicker]);
+  }, [stopTicker, live, focusAt, showWaiting, feed]);
 
-  // Create the replayer once the first playable events are there; afterwards
-  // only append what later Loki pages bring in. Playing state follows the
-  // replayer's own start/pause/finish events.
+  /** Wires a new replayer's events to the controls. */
+  const attach = useCallback(
+    (replayer: Replayer) => {
+      replayerRef.current = replayer;
+      replayer.on('resize', (dimension) => {
+        viewportRef.current = dimension as { width: number; height: number };
+        rescale();
+      });
+      if (live) {
+        return;
+      }
+      const onPlay = () => {
+        setPlaying(true);
+        startTicker();
+      };
+      const onStop = () => {
+        setPlaying(false);
+        stopTicker();
+        syncRef.current();
+      };
+      replayer.on('start', onPlay);
+      replayer.on('resume', onPlay);
+      replayer.on('pause', onStop);
+      replayer.on('finish', () => {
+        onStop();
+        // rrweb ran out of loaded events: the end, or the next chunk is still loading.
+        const current = trackRef.current;
+        const offsetMs = replayer.getCurrentTime();
+        const next = afterRun(current, offsetMs);
+        if (offsetMs >= trackLength(current) - END_TOLERANCE_MS || next.kind === 'end') {
+          setWant(false);
+          return;
+        }
+        if (next.kind === 'play') {
+          feed.seek(replayer, offsetMs, wantPlayRef.current);
+        } else {
+          feed.stopSkipping(replayer);
+          showWaiting(offsetMs, next.waitFor);
+        }
+      });
+      replayer.on('skip-start', () => {
+        setSkipping(true);
+        clock.update({ skipping: true });
+      });
+      replayer.on('skip-end', () => {
+        setSkipping(false);
+        clock.update({ skipping: false });
+      });
+    },
+    [live, rescale, startTicker, stopTicker, setWant, feed, showWaiting, clock]
+  );
+
+  // Live: create the replayer once the newest chunk is loaded; afterwards
+  // append what live polling brings in.
   useEffect(() => {
-    if (events.length === 0 || !mountRef.current) {
+    if (!live || liveEvents.length === 0 || !mountRef.current || !isReady(track, track.chunks.length - 1)) {
       return;
     }
-
     let replayer = replayerRef.current;
-    newestEventRef.current = Math.max(newestEventRef.current, events[events.length - 1].timestamp);
-    if (!replayer && live) {
+    newestEventRef.current = Math.max(newestEventRef.current, liveEvents[liveEvents.length - 1].timestamp);
+    if (!replayer) {
       // rrweb live mode: events before the baseline are applied at once, later
       // ones are scheduled relative to it as they are added.
       replayer = new Replayer([], {
@@ -236,14 +414,11 @@ export function ReplayPlayer({
         showWarning: false,
         UNSAFE_replayCanvas: false,
       });
-      replayerRef.current = replayer;
-      replayer.on('resize', (dimension) => {
-        viewportRef.current = dimension as { width: number; height: number };
-        rescale();
-      });
-      replayer.startLive(events[events.length - 1].timestamp - LIVE_BUFFER_MS);
-      const from = liveStartIndex(events);
-      events.forEach((event, index) => {
+      attach(replayer);
+      replayer.startLive(liveEvents[liveEvents.length - 1].timestamp - LIVE_BUFFER_MS);
+      const from = liveStartIndex(liveEvents);
+      liveBaselineRef.current = liveEvents[from].timestamp;
+      liveEvents.forEach((event, index) => {
         if (index >= from) {
           replayer!.addEvent(event);
         }
@@ -253,88 +428,94 @@ export function ReplayPlayer({
       startTicker();
       return;
     }
-    if (!replayer) {
-      replayer = new Replayer(events, {
-        root: mountRef.current,
-        skipInactive,
-        speed,
-        mouseTail: { strokeStyle: theme.colors.primary.main },
-        showWarning: false,
-        UNSAFE_replayCanvas: false,
-      });
-      replayerRef.current = replayer;
-      events.forEach((event) => addedRef.current.add(event));
-
-      const onPlay = () => {
-        setPlaying(true);
-        startTicker();
-      };
-      const onStop = () => {
-        setPlaying(false);
-        stopTicker();
-        syncRef.current();
-      };
-      replayer.on('start', onPlay);
-      replayer.on('resume', onPlay);
-      replayer.on('pause', onStop);
-      replayer.on('finish', onStop);
-      replayer.on('resize', (dimension) => {
-        viewportRef.current = dimension as { width: number; height: number };
-        rescale();
-      });
-      replayer.on('skip-start', () => {
-        setSkipping(true);
-        clock.update({ skipping: true });
-      });
-      replayer.on('skip-end', () => {
-        setSkipping(false);
-        clock.update({ skipping: false });
-      });
-
-      const start = Math.max(0, initialOffsetMs);
-      if (autoPlay) {
-        replayer.play(start);
-      } else {
-        replayer.pause(start);
-      }
-      scheduleSync();
-      return;
-    }
-
-    if (live) {
-      for (const event of events) {
-        if (!addedRef.current.has(event)) {
-          replayer.addEvent(event);
-          addedRef.current.add(event);
-        }
-      }
-      return;
-    }
-
-    let earliestAdded = Infinity;
-    for (const event of events) {
+    for (const event of liveEvents) {
       if (!addedRef.current.has(event)) {
-        replayer.addEvent(event);
+        // Never what precedes the live start (e.g. an older chunk that loaded
+        // late): rrweb would apply it at once, on top of the live page.
+        if (event.timestamp >= liveBaselineRef.current) {
+          replayer.addEvent(event);
+        }
         addedRef.current.add(event);
-        earliestAdded = Math.min(earliestAdded, event.timestamp);
       }
     }
-    // rrweb applies an event older than the playhead immediately, out of
-    // order (a retried batch can land in a later Loki page). Re-seeking to
-    // the current position rebuilds the DOM from the last snapshot instead.
-    const meta = replayer.getMetaData();
-    const current = replayer.getCurrentTime();
-    if (earliestAdded < meta.startTime + current) {
-      if (playingRef.current) {
-        replayer.play(current);
-      } else {
-        replayer.pause(current);
-      }
-    }
-    scheduleSync();
     // Creation depends only on the first events; later renders append.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [liveEvents]);
+
+  /**
+   * Replay: create the replayer once the start position is loaded (it needs
+   * two events and the snapshot there). False while it cannot be yet.
+   */
+  const create = useCallback((): boolean => {
+    if (live || replayerRef.current || !mountRef.current) {
+      return Boolean(replayerRef.current);
+    }
+    const start = pendingOffsetRef.current;
+    const initial = feed.initialEvents(start);
+    if (!initial) {
+      const current = trackRef.current;
+      if (readyAt(current, start) && afterRun(current, start).kind === 'end') {
+        // Loaded, and nothing to play from here on.
+        waitRef.current = { offsetMs: start, untilMs: start };
+        setWaiting('empty');
+      } else {
+        showWaiting(start, start);
+      }
+      syncRef.current();
+      return false;
+    }
+    stopWaiting();
+    feed.setSkipInactive(skipInactiveRef.current);
+    const replayer = new Replayer(initial, {
+      root: mountRef.current,
+      skipInactive: skipInactiveRef.current,
+      speed: speedRef.current,
+      mouseTail: { strokeStyle: theme.colors.primary.main },
+      showWarning: false,
+      UNSAFE_replayCanvas: false,
+    });
+    attach(replayer);
+    if (wantPlayRef.current) {
+      replayer.play(start);
+    } else {
+      replayer.pause(start);
+    }
+    scheduleSync();
+    return true;
+  }, [live, feed, showWaiting, stopWaiting, theme, attach, scheduleSync]);
+
+  // Hand the replayer the chunks that arrive, and go on where playback waits for one.
+  useEffect(() => {
+    trackRef.current = track;
+    feed.setTrack(track);
+    const replayer = replayerRef.current;
+    if (live) {
+      return;
+    }
+    if (!replayer) {
+      create();
+      return;
+    }
+    const wait = waitRef.current;
+    if (wait) {
+      if (readyAt(track, wait.untilMs)) {
+        stopWaiting();
+        feed.seek(replayer, wait.offsetMs, wantPlayRef.current);
+        scheduleSync();
+      } else {
+        showWaiting(wait.offsetMs, wait.untilMs);
+      }
+      return;
+    }
+    feed.append(replayer);
+    // Only new chunks matter here, not the callbacks' identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [track]);
+
+  useEffect(() => {
+    // The loader starts where this player starts.
+    focusAt(pendingOffsetRef.current, true);
+  }, [focusAt]);
 
   useEffect(
     () => () => {
@@ -361,21 +542,40 @@ export function ReplayPlayer({
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  const seek = useCallback(
-    (target: number) => {
+  /** Go to `offsetMs` (clamped to the track), playing if playback is wanted; waits there while it loads. */
+  const goToOffset = useCallback(
+    (target: number, play: boolean, dragging = false) => {
+      const clamped = Math.max(0, Math.min(target, trackLength(trackRef.current)));
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = undefined;
+      if (dragging) {
+        focusTimerRef.current = setTimeout(() => {
+          focusTimerRef.current = undefined;
+          focusAt(clamped, true);
+        }, FOCUS_DEBOUNCE_MS);
+      } else {
+        focusAt(clamped, true);
+      }
       const replayer = replayerRef.current;
       if (!replayer) {
+        pendingOffsetRef.current = clamped;
+        create();
+        syncRef.current();
         return;
       }
-      const clamped = Math.max(0, Math.min(target, replayer.getMetaData().totalTime));
-      if (playing) {
-        replayer.play(clamped);
+      if (feed.seek(replayer, clamped, play)) {
+        stopWaiting();
       } else {
-        replayer.pause(clamped);
+        showWaiting(clamped, clamped);
       }
       scheduleSync();
     },
-    [playing, scheduleSync]
+    [feed, focusAt, scheduleSync, showWaiting, stopWaiting, create]
+  );
+
+  const seek = useCallback(
+    (target: number, dragging = false) => goToOffset(target, wantPlayRef.current, dragging),
+    [goToOffset]
   );
 
   useEffect(() => {
@@ -388,20 +588,31 @@ export function ReplayPlayer({
 
   const togglePlay = () => {
     const replayer = replayerRef.current;
+    if (wantPlayRef.current) {
+      setWant(false);
+      if (replayer && playing) {
+        const current = replayer.getCurrentTime();
+        // Pausing merges chunks held behind the playhead (see TrackFeed).
+        if (feed.hasHeld(current)) {
+          feed.seek(replayer, current, false);
+        } else {
+          replayer.pause();
+        }
+      }
+      return;
+    }
+    setWant(true);
     if (!replayer) {
+      create();
       return;
     }
-    if (playing) {
-      replayer.pause();
-      return;
-    }
-    const meta = replayer.getMetaData();
     const current = replayer.getCurrentTime();
-    replayer.play(current >= meta.totalTime ? 0 : current);
+    goToOffset(current >= trackLength(trackRef.current) - END_TOLERANCE_MS ? 0 : current, true);
   };
 
   const changeSpeed = (value: number) => {
     setSpeed(value);
+    speedRef.current = value;
     clock.update({ speed: value });
     replayerRef.current?.setConfig({ speed: value });
   };
@@ -409,6 +620,8 @@ export function ReplayPlayer({
   const toggleSkipInactive = () => {
     const next = !skipInactive;
     setSkipInactive(next);
+    skipInactiveRef.current = next;
+    feed.setSkipInactive(next);
     replayerRef.current?.setConfig({ skipInactive: next });
   };
 
@@ -444,6 +657,11 @@ export function ReplayPlayer({
       <div ref={stageRef} className={styles.stage}>
         <div ref={mountRef} />
         {skipping && <div className={styles.skipping}>Skipping inactivity…</div>}
+        {shownWaiting && (
+          <div className={styles.waiting} data-testid={testIds.player.waiting}>
+            {(live ? LIVE_WAITING_TEXT : WAITING_TEXT)[shownWaiting]}
+          </div>
+        )}
       </div>
 
       {live ? (
@@ -486,9 +704,24 @@ export function ReplayPlayer({
               max={Math.max(total, 1)}
               step={100}
               defaultValue={0}
-              onChange={(event) => seek(Number(event.currentTarget.value))}
+              onChange={(event) => seek(Number(event.currentTarget.value), true)}
               data-testid={testIds.player.timeline}
             />
+            {total > 0 && unloaded.length > 0 && (
+              <div className={styles.loadTrack} aria-hidden data-testid={testIds.player.unloaded}>
+                {unloaded.map((span) => (
+                  <div
+                    key={span.fromMs}
+                    className={styles.unloaded}
+                    style={{
+                      left: `${(span.fromMs / total) * 100}%`,
+                      width: `${((Math.min(total, span.toMs) - span.fromMs) / total) * 100}%`,
+                    }}
+                    title="Not loaded yet"
+                  />
+                ))}
+              </div>
+            )}
             <div className={styles.markerTrack}>
               {total > 0 &&
                 markers.map((marker, index) => (
@@ -537,9 +770,9 @@ export function ReplayPlayer({
               onClick={() => seek(clock.get().offsetMs - SKIP_MS)}
             />
             <IconButton
-              name={playing ? 'pause' : 'play'}
+              name={playing || wantPlay ? 'pause' : 'play'}
               size="xl"
-              tooltip={playing ? 'Pause' : 'Play'}
+              tooltip={playing || wantPlay ? 'Pause' : 'Play'}
               onClick={togglePlay}
               data-testid={testIds.player.play}
             />
@@ -669,7 +902,29 @@ const getStyles = (theme: GrafanaTheme2) => ({
     color: '#fff',
     fontSize: theme.typography.h4.fontSize,
   }),
+  waiting: css({
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing(2),
+    textAlign: 'center',
+    background: theme.colors.background.canvas,
+    opacity: 0.92,
+    color: theme.colors.text.secondary,
+    fontSize: theme.typography.h5.fontSize,
+  }),
   timeline: css({ position: 'relative', padding: theme.spacing(1, 2, 0) }),
+  // Parts not loaded yet, hatched under the range input on its axis.
+  loadTrack: css({ position: 'relative', height: 4, margin: `0 ${THUMB_INSET_PX}px` }),
+  unloaded: css({
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    background: `repeating-linear-gradient(135deg, ${theme.colors.text.disabled} 0 2px, transparent 2px 5px)`,
+    opacity: 0.6,
+  }),
   // The range thumb's centre runs from half a thumb in to half a thumb short
   // of the input's ends; markers and the level graph follow the same axis.
   markerTrack: css({

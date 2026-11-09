@@ -49,6 +49,24 @@ The streams are a fixed set, so a new frontend (or anything a public client
 sends) never creates Loki streams or needs a config change. The app finds replays
 and journeys by `session_id` and filters apps with `| app_name=~"…"`.
 
+**Progressive loading.** A replay of any length opens at once: the app first reads
+the session's index (its Meta events, one small line per page load and per
+5-minute checkout, plus the newest line of every recording), so the full
+timeline, tabs, journey markers, audio levels and call audio are there before
+any DOM is loaded. It then loads chunks — one checkout of one recording
+(`event_data_recording_id` + `event_data_gen`), each starting with its own
+snapshot — four at a time: the one at the link's `t`, the search match or the
+seek target first (and the checkout before it when that chunk lost its Meta),
+the next two, then outward from the playhead. Unloaded parts are hatched on the
+timeline; playback pauses with "Loading…" where it reaches one and goes on
+when it arrives. A seek re-prioritises and cancels requests no longer needed.
+Chunk queries use Loki time windows around the checkouts' Meta lines (the
+browser clock in rrweb times can be far off); playback offsets use rrweb times
+and count from the tab's first page load, so share links keep their meaning.
+Live mode polls the session from the end of the index on (new checkouts,
+reloads and tabs included) and starts with the newest chunk. Recordings from
+Faro replay < 2.13 (no recording id) cannot be indexed and are not shown.
+
 Playback uses `@grafana/rrweb`, the same rrweb fork the recorder uses. Keep it on the
 version that `@grafana/faro-instrumentation-replay` depends on.
 
