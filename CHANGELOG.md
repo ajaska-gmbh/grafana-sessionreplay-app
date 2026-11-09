@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Replays load progressively: the session's index (page loads and 5-minute checkouts) comes first, so the full timeline, tabs, journey markers, audio levels and call audio show at once, whatever the length. The replay then loads chunk by chunk (one checkout of one recording), four at a time, starting where playback starts — the link's `t`, the search match or a seek — and goes on in the background outward from the playhead. Seeking re-prioritises and cancels requests no longer needed; unloaded parts are hatched on the timeline, and playback waits with "Loading…" where it reaches one. Length, seek range and play-from-end come from the index; share links, search seek, journey markers and audio keep their offsets.
+- A checkout whose Meta line was lost is still played (after the checkout before it); chunks that failed after retries say so and are tried again on the next seek there.
+- Live mode starts right after the index (not after the whole session loaded), with the newest checkout first, and picks up new checkouts, reloads and tabs.
+- Every Loki request carries its own request id and is cancelled when the viewer leaves, the session or the tab changes.
+- Sessions list: the app filter also runs as a line filter before `| logfmt` (active sessions, error counts, search), so other apps' lines are not parsed and lines without the app in structured metadata (> 64 KiB) still count.
+
 ## 0.5.3
 
 - Long replays load much faster: sessions recorded after the Alloy pipeline labels the payload stream by session bucket (`session_bucket`, adler32(session_id) % 256) read only their own bucket, about 1/256 of all sessions' payload, instead of all of it. Configured by `payloadBuckets` / `payloadBucketsSince` (provisioned with the pipeline); older sessions, and a bucket without the session, read the whole stream as before.
