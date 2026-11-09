@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- First published release of 0.6.0's progressive loading (the 0.6.0 release build failed on a timing-dependent test and was never published) (#18).
+
 ## 0.6.0
 
 - Replays load progressively: the session's index (page loads and 5-minute checkouts) comes first, so the full timeline, tabs, journey markers, audio levels and call audio show at once, whatever the length. The replay then loads chunk by chunk (one checkout of one recording), four at a time, starting where playback starts — the link's `t`, the search match or a seek — and goes on in the background outward from the playhead. Seeking re-prioritises and cancels requests no longer needed; unloaded parts are hatched on the timeline, and playback waits with "Loading…" where it reaches one. Length, seek range and play-from-end come from the index; share links, search seek, journey markers and audio keep their offsets.
