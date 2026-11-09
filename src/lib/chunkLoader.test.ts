@@ -40,20 +40,37 @@ describe('ChunkLoader', () => {
     expect(loader.idle).toBe(false);
   });
 
-  it('frees a slot at once for a new target, aborting the least wanted request', async () => {
+  it('frees slots for a far target by aborting requests no longer among the next few needed', async () => {
     const { load, requests, started } = controlledLoad();
+    const loader = new ChunkLoader({ load, onLoaded: () => undefined });
+    loader.prioritise(keys(20));
+
+    // A seek far away: c9 and c10 first; c0 and c1 are still among the next eight, c2 and c3 not.
+    loader.prioritise(['c9', 'c0', 'c1', 'c10', 'c11', 'c12', 'c13', 'c14', 'c2', 'c3']);
+    await flush();
+
+    expect(requests.get('c2')!.signal.aborted).toBe(true);
+    expect(requests.get('c3')!.signal.aborted).toBe(true);
+    expect(['c0', 'c1'].every((key) => !requests.get(key)!.signal.aborted)).toBe(true);
+    expect(loader.loading.sort()).toEqual(['c0', 'c1', 'c10', 'c9']);
+    expect(started.slice(4)).toEqual(['c9', 'c10']);
+    expect(loader.statusOf('c3')).toBe('pending');
+  });
+
+  it('lets requests still among the next few needed finish rather than abort them (no restart storm on a drag)', async () => {
+    const { load, requests } = controlledLoad();
     const loader = new ChunkLoader({ load, onLoaded: () => undefined });
     loader.prioritise(keys(10));
 
-    // A seek far away: c9 first, then the requests that run still matter.
-    loader.prioritise(['c9', 'c0', 'c1', 'c2', 'c3']);
+    const chunks = keys(10).map((key) => ({ key }));
+    // Dragging a little ahead: what runs is still needed soon after the new target.
+    for (const target of [1, 2, 1, 2]) {
+      loader.prioritise(priorityOrder(chunks, target));
+    }
     await flush();
 
-    expect(requests.get('c3')!.signal.aborted).toBe(true);
-    expect(['c0', 'c1', 'c2'].every((key) => !requests.get(key)!.signal.aborted)).toBe(true);
-    expect(loader.loading.sort()).toEqual(['c0', 'c1', 'c2', 'c9']);
-    expect(started[started.length - 1]).toBe('c9');
-    expect(loader.statusOf('c3')).toBe('pending');
+    expect([...requests.values()].filter((request) => request.signal.aborted)).toHaveLength(0);
+    expect(requests.size).toBe(4);
   });
 
   it('never fetches a loaded chunk again, and loads nothing outside the order', async () => {
@@ -84,7 +101,7 @@ describe('ChunkLoader', () => {
     expect(onLoaded).not.toHaveBeenCalled();
   });
 
-  it('retries a failing chunk, then gives it up until it is asked for again', async () => {
+  it('retries a failing chunk with growing pauses, then gives it up until retried by hand', async () => {
     let attempts = 0;
     const onFailed = jest.fn();
     const loader = new ChunkLoader({
@@ -99,6 +116,9 @@ describe('ChunkLoader', () => {
     });
 
     loader.prioritise(['x']);
+    expect(loader.statusOf('x')).toBe('loading');
+    await flush();
+    expect(loader.statusOf('x')).toBe('retrying');
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(attempts).toBe(3);
@@ -106,9 +126,30 @@ describe('ChunkLoader', () => {
     expect(loader.statusOf('x')).toBe('failed');
     expect(loader.idle).toBe(true);
 
-    loader.prioritise(['x']);
+    loader.retry('x');
     await flush();
     expect(attempts).toBe(4);
+  });
+
+  it('keeps its attempts across new orders: a live poll every few seconds does not retry forever', async () => {
+    let attempts = 0;
+    const loader = new ChunkLoader({
+      load: async () => {
+        attempts++;
+        throw new Error('loki timeout');
+      },
+      onLoaded: () => undefined,
+      retries: 2,
+      retryDelayMs: 1,
+    });
+
+    for (let poll = 0; poll < 20; poll++) {
+      loader.prioritise(['x']);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+    }
+
+    expect(attempts).toBe(3);
+    expect(loader.statusOf('x')).toBe('failed');
   });
 });
 

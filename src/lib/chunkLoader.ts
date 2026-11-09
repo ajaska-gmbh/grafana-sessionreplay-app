@@ -4,11 +4,13 @@ import { isAbortError } from './loki';
 export const CHUNK_CONCURRENCY = 4;
 /** Chunks right after the target are loaded next, so playback runs on without waiting. */
 export const CHUNKS_AHEAD = 2;
-/** Further attempts of a failed chunk before it is given up (until it is asked for again). */
+/** Further attempts of a failed chunk before it is given up (until `retry`, e.g. a seek there). */
 export const CHUNK_RETRIES = 2;
+/** First pause before a retry; doubled for each further one. */
 const RETRY_DELAY_MS = 1000;
 
-export type ChunkStatus = 'pending' | 'loading' | 'loaded' | 'failed';
+/** `retrying`: failed, waiting for its next attempt. `failed`: given up. */
+export type ChunkStatus = 'pending' | 'loading' | 'retrying' | 'loaded' | 'failed';
 
 export interface ChunkLoaderOptions<T> {
   /** Fetches one chunk; must reject (AbortError) when the signal aborts. */
@@ -25,9 +27,11 @@ export interface ChunkLoaderOptions<T> {
  * Loads chunks by priority with bounded parallelism. The caller gives the
  * full order (`prioritise`); the loader keeps `concurrency` requests running
  * on the first chunks of it that are not loaded. A new order (a seek, another
- * tab) aborts requests that are no longer among the first ones, so the target
- * gets a slot at once. Loaded chunks are remembered and never fetched again;
- * `dispose` aborts everything.
+ * tab) aborts requests far down it when the first ones need their slots; a
+ * request still among the next few needed runs on (Loki keeps scanning a
+ * cancelled query anyway). Loaded chunks are remembered and never fetched
+ * again. A failing chunk is retried with growing pauses, then given up until
+ * `retry` — a new order does not reset that. `dispose` aborts everything.
  */
 export class ChunkLoader<T> {
   private order: string[] = [];
@@ -60,35 +64,31 @@ export class ChunkLoader<T> {
     return this.inFlight.size === 0 && this.timers.size === 0 && this.next() === undefined;
   }
 
-  /** Marks a chunk loaded from elsewhere (e.g. live polling saw all of it). */
-  markLoaded(key: string): void {
-    this.inFlight.get(key)?.abort();
-    this.inFlight.delete(key);
-    this.status.set(key, 'loaded');
+  /** Tries a given-up chunk again, with fresh attempts (the user asked for it). */
+  retry(key: string): void {
+    if (this.statusOf(key) === 'failed') {
+      this.status.set(key, 'pending');
+      this.attempts.delete(key);
+      this.pump();
+    }
   }
 
-  /**
-   * Load in this order (most wanted first); keys not listed are not loaded.
-   * Failed chunks among the first ones are tried again.
-   */
+  /** Load in this order (most wanted first); keys not listed are not loaded. */
   prioritise(order: string[]): void {
     if (this.disposed) {
       return;
     }
     this.order = order;
-    const wanted = this.order.filter((key) => this.statusOf(key) !== 'loaded').slice(0, this.concurrency);
-    for (const key of wanted) {
-      if (this.statusOf(key) === 'failed') {
-        this.status.set(key, 'pending');
-        this.attempts.delete(key);
-      }
-    }
+    const open = this.order.filter((key) => this.statusOf(key) === 'pending' || this.inFlight.has(key));
+    const wanted = open.slice(0, this.concurrency);
+    // Requests still among the next few needed are worth finishing.
+    const kept = new Set(open.slice(0, this.concurrency * 2));
     // Free a slot for every wanted chunk that is waiting, lowest priority first.
     const waiting = wanted.filter((key) => !this.inFlight.has(key)).length;
     const free = this.concurrency - this.inFlight.size;
     if (waiting > free) {
       const unwanted = [...this.inFlight.keys()]
-        .filter((key) => !wanted.includes(key))
+        .filter((key) => !kept.has(key))
         .sort((a, b) => this.rank(b) - this.rank(a))
         .slice(0, waiting - free);
       for (const key of unwanted) {
@@ -164,15 +164,18 @@ export class ChunkLoader<T> {
           this.pump();
           return;
         }
-        // Try again after a pause; other chunks use the slot meanwhile.
-        this.status.set(key, 'failed');
-        const timer = setTimeout(() => {
-          this.timers.delete(timer);
-          if (this.statusOf(key) === 'failed') {
-            this.status.set(key, 'pending');
-          }
-          this.pump();
-        }, this.retryDelayMs * attempt);
+        // Try again after a growing pause; other chunks use the slot meanwhile.
+        this.status.set(key, 'retrying');
+        const timer = setTimeout(
+          () => {
+            this.timers.delete(timer);
+            if (this.statusOf(key) === 'retrying') {
+              this.status.set(key, 'pending');
+            }
+            this.pump();
+          },
+          this.retryDelayMs * 2 ** (attempt - 1)
+        );
         this.timers.add(timer);
         this.pump();
       }
