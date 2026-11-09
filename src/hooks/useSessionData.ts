@@ -165,6 +165,10 @@ export function useSessionData(params: {
             ? { count: bucketCount, sinceMs: bucketsSinceMs }
             : undefined;
         const readPayloads = async (stream: string): Promise<number> => {
+          // A cancelled run (the session changed meanwhile) must not set the new one's live selector.
+          if (cancelled) {
+            return 0;
+          }
           payloadStreamRef.current = stream;
           let lines = 0;
           for await (const page of readForward(
