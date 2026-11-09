@@ -9,6 +9,8 @@ import {
   buildRecordings,
   CHUNK_AFTER_MS,
   CHUNK_BEFORE_MS,
+  CHUNK_WIDE_AFTER_MS,
+  CHUNK_WIDE_BEFORE_MS,
   chunkQuery,
   fetchChunk,
   fetchReplayIndex,
@@ -117,7 +119,7 @@ describe('buildRecordings', () => {
   });
   const min = 60_000;
 
-  it('windows every gen in Loki time from its Meta to the next one, with slack', () => {
+  it('windows every gen in Loki time from its Meta to the next one, with slack (about 5 min more than the gen)', () => {
     // Loki time lags the browser clock by 90 s here.
     const [recording] = buildRecordings(
       [metaLine('r', 0, 0, 90_000), metaLine('r', 1, 5 * min, 5 * min + 90_000)],
@@ -127,7 +129,8 @@ describe('buildRecordings', () => {
     expect(recording).toMatchObject({ recordingId: 'r', startMs: 0, endMs: 9 * min, lastLokiMs: 9 * min + 90_000 });
     expect(recording.gens.map((gen) => [gen.gen, gen.startMs, gen.window])).toEqual([
       [0, 0, { fromMs: 90_000 - CHUNK_BEFORE_MS, toMs: 5 * min + 90_000 + CHUNK_AFTER_MS }],
-      [1, 5 * min, { fromMs: 5 * min + 90_000 - CHUNK_BEFORE_MS, toMs: 9 * min + 90_000 + CHUNK_AFTER_MS }],
+      // The last gen: wider, it ends where the recording's newest line arrived.
+      [1, 5 * min, { fromMs: 5 * min + 90_000 - CHUNK_WIDE_BEFORE_MS, toMs: 9 * min + 90_000 + CHUNK_WIDE_AFTER_MS }],
     ]);
   });
 
@@ -148,10 +151,12 @@ describe('buildRecordings', () => {
     ]);
     // Windowed by the Metas around them.
     expect(recording.gens[1].window).toEqual({
-      fromMs: 1000 - CHUNK_BEFORE_MS,
-      toMs: 15 * min + 1000 + CHUNK_AFTER_MS,
+      fromMs: 1000 - CHUNK_WIDE_BEFORE_MS,
+      toMs: 15 * min + 1000 + CHUNK_WIDE_AFTER_MS,
     });
-    expect(recording.gens[5].window.toMs).toBe(25 * min + 1000 + CHUNK_AFTER_MS);
+    expect(recording.gens[5].window.toMs).toBe(25 * min + 1000 + CHUNK_WIDE_AFTER_MS);
+    // Gen 0 has a Meta, but the gen after it does not: its end is uncertain too.
+    expect(recording.gens[0].window.toMs).toBe(15 * min + 1000 + CHUNK_WIDE_AFTER_MS);
   });
 
   it('starts at the first Meta, keeps the first Meta of a gen, and sorts recordings by start', () => {

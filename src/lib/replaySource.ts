@@ -33,10 +33,22 @@ import type { PayloadBuckets } from './sessionBucket';
  */
 export const META_LINE_FILTER = ` |= ${logqlString('event_data_event="{\\"type\\":4,')}`;
 
-/** Chunk windows start this long before the chunk's Meta arrived in Loki (lines of one batch arrive out of order). */
-export const CHUNK_BEFORE_MS = 5 * 60 * 1000;
-/** …and end this long after the next chunk's Meta (or the recording's last line): retried batches arrive late. */
-export const CHUNK_AFTER_MS = 10 * 60 * 1000;
+/**
+ * A chunk's Loki window around the Meta lines of its gen and the next one.
+ * Measured: a gen's lines arrive up to ~5 s before its Meta line and up to
+ * ~90 s after their rrweb time, so for a gen between two Metas the window is
+ * [Meta_g − 2 min, Meta_g+1 + 3 min]: about 5 minutes more than the gen, not
+ * 4× its scan on sessions read from the whole stream.
+ */
+export const CHUNK_BEFORE_MS = 2 * 60 * 1000;
+export const CHUNK_AFTER_MS = 3 * 60 * 1000;
+/**
+ * Wider where the bounds are less certain: the last gen (ends at the
+ * recording's newest line; batches retried late) and gens without Meta
+ * (windowed by Metas further away).
+ */
+export const CHUNK_WIDE_BEFORE_MS = 5 * 60 * 1000;
+export const CHUNK_WIDE_AFTER_MS = 10 * 60 * 1000;
 
 /** One checkout of one recording: what is fetched as one chunk. */
 export interface GenIndex {
@@ -234,8 +246,9 @@ function gensOf(
     const before = metas[m];
     const after = metas[m + 1];
     const own = before.gen === gen ? before : undefined;
-    const fromMs = nsToMs(before.lokiNs) - CHUNK_BEFORE_MS;
-    const toMs = (after ? nsToMs(after.lokiNs) : lastLokiMs) + CHUNK_AFTER_MS;
+    const interior = own !== undefined && after?.gen === gen + 1;
+    const fromMs = nsToMs(before.lokiNs) - (interior ? CHUNK_BEFORE_MS : CHUNK_WIDE_BEFORE_MS);
+    const toMs = (after ? nsToMs(after.lokiNs) : lastLokiMs) + (interior ? CHUNK_AFTER_MS : CHUNK_WIDE_AFTER_MS);
     if (own) {
       gens.push({
         recordingId,
