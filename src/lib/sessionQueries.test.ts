@@ -2,7 +2,7 @@ jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
 import { of } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
-import { fetchMatchingSessionIds } from './sessionQueries';
+import { fetchActiveSessionIds, fetchErrorCounts, fetchMatchingSessionIds } from './sessionQueries';
 
 function seriesResponse(sessions: Array<[string, number]>) {
   return of({
@@ -44,5 +44,30 @@ describe('fetchMatchingSessionIds', () => {
 
     expect([...(await fetchMatchingSessionIds('loki', [], '48211', [], 0, 1))]).toEqual([]);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('session list queries', () => {
+  const exprOf = (fetch: jest.Mock) =>
+    (fetch.mock.calls[0] as unknown as [{ data: { queries: Array<{ expr: string }> } }])[0].data.queries[0].expr;
+
+  it('drops other apps by line before parsing the replay payload', async () => {
+    const fetch = jest.fn(() => seriesResponse([['s1', 2]]));
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+
+    expect([...(await fetchActiveSessionIds('loki', ['ppd-leads-frontend'], 120_000, 120_000))]).toEqual(['s1']);
+    expect(exprOf(fetch)).toBe(
+      'sum by (session_id) (count_over_time({source="faro_replay", replay="payload"} |= " app_name=ppd-leads-frontend " | app_name=~"ppd-leads-frontend" | logfmt session_id [120s]))'
+    );
+  });
+
+  it('drops other apps by line before parsing exceptions', async () => {
+    const fetch = jest.fn(() => seriesResponse([]));
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+
+    await fetchErrorCounts('loki', ['a', 'b'], 0, 60_000);
+    expect(exprOf(fetch)).toContain(
+      '{source="faro"} |~ " app_name=(?:a|b) " | app_name=~"a|b" |= "kind=exception" | logfmt'
+    );
   });
 });

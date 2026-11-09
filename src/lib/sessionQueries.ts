@@ -1,6 +1,6 @@
 import { lastValueFrom } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
-import { appFilter, eventLineFilter, sessionLineFilter, STREAMS } from './logql';
+import { appFilter, appLineFilter, eventLineFilter, sessionLineFilter, STREAMS } from './logql';
 import { createLokiFetcher } from './loki';
 import { REPLAY_STARTED_EVENT, summariseSessions, type SessionSummary } from './sessions';
 import { sessionSearchQuery } from './sessionSearch';
@@ -90,7 +90,7 @@ export async function fetchErrorCounts(
   fromMs: number,
   toMs: number
 ): Promise<Map<string, number>> {
-  const expr = `sum by (session_id) (count_over_time(${STREAMS.faro}${appFilter(apps)} |= "kind=exception" | logfmt session_id [${rangeSeconds(fromMs, toMs)}s]))`;
+  const expr = `sum by (session_id) (count_over_time(${STREAMS.faro}${appLineFilter(apps)}${appFilter(apps)} |= "kind=exception" | logfmt session_id [${rangeSeconds(fromMs, toMs)}s]))`;
   const counts = new Map<string, number>();
   for (const { labels, value } of await instantSeries(lokiUid, expr, fromMs, toMs)) {
     if (labels.session_id) {
@@ -107,7 +107,7 @@ export async function fetchActiveSessionIds(
   nowMs: number,
   windowMs: number
 ): Promise<Set<string>> {
-  const expr = `sum by (session_id) (count_over_time(${STREAMS.payloads}${appFilter(apps)} | logfmt session_id [${Math.ceil(windowMs / 1000)}s]))`;
+  const expr = `sum by (session_id) (count_over_time(${STREAMS.payloads}${appLineFilter(apps)}${appFilter(apps)} | logfmt session_id [${Math.ceil(windowMs / 1000)}s]))`;
   const series = await instantSeries(lokiUid, expr, nowMs - windowMs, nowMs);
   return new Set(
     series
