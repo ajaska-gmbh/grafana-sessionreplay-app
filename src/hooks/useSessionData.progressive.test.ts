@@ -231,10 +231,10 @@ describe('useSessionData progressive replay', () => {
       return answerFromLines(call);
     };
     const { result, unmount } = renderHook(() =>
-      useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range, live: true })
+      useSessionData({ lokiUid: 'loki', sessionId: SESSION, ...range, live: true, chunkRetryDelayMs: 10 })
     );
     try {
-      // The loader's attempts (now, +1 s, +2 s), given up; the next live poll tries again.
+      // The loader's attempts (now, +10 ms, +20 ms here), given up; the next live poll tries again.
       await waitFor(() => expect(result.current.tracks[0]?.chunks[7].failed).toBe(true), { timeout: 6000 });
       await waitFor(() => expect(result.current.tracks[0].chunks[7].loaded).toBe(true), { timeout: 6000 });
       expect(chunkCalls().filter((call) => chunkGen(call) === '7')).toHaveLength(4);
