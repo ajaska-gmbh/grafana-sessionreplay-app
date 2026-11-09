@@ -1,6 +1,8 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
-import { compareNs, framesToLines, logqlString, readForward, type LokiFetcher } from './loki';
+import { Observable, of } from 'rxjs';
+import { getBackendSrv } from '@grafana/runtime';
+import { compareNs, createLokiFetcher, framesToLines, logqlString, readForward, type LokiFetcher } from './loki';
 import type { LokiLine } from '../types';
 
 describe('framesToLines', () => {
@@ -113,5 +115,83 @@ describe('readForward', () => {
     const lines = await collect(readForward(fetcher, '{x="y"}', 1000, 2000, 4));
 
     expect(lines).toHaveLength(4);
+  });
+});
+
+describe('createLokiFetcher', () => {
+  const args = { expr: '{a="b"}', fromMs: 1, toMs: 2, limit: 10, direction: 'forward' as const };
+  const frame = {
+    results: {
+      A: { frames: [{ schema: { fields: [{ name: 'Line' }, { name: 'tsNs' }] }, data: { values: [['x'], ['5']] } }] },
+    },
+  };
+
+  it('gives every request its own requestId, so Grafana never cancels one for another', async () => {
+    const fetch = jest.fn(() => of({ data: frame }));
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+    const fetcher = createLokiFetcher('loki');
+
+    expect(await fetcher(args)).toEqual([{ tsNs: '5', line: 'x' }]);
+    await fetcher(args);
+
+    const ids = (fetch.mock.calls as unknown as Array<[{ requestId: string }]>).map(([request]) => request.requestId);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('cancels the HTTP request when aborted', async () => {
+    let unsubscribed = false;
+    const fetch = jest.fn(
+      () =>
+        new Observable(() => () => {
+          unsubscribed = true;
+        })
+    );
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+    const abort = new AbortController();
+
+    const pending = createLokiFetcher('loki')({ ...args, signal: abort.signal });
+    abort.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(unsubscribed).toBe(true);
+  });
+
+  it('does not start an aborted request', async () => {
+    const fetch = jest.fn();
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(createLokiFetcher('loki')({ ...args, signal: abort.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('readForward cancellation', () => {
+  it('stops between pages once aborted, and passes the signal to every request', async () => {
+    const abort = new AbortController();
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetcher: LokiFetcher = async ({ fromMs, signal }) => {
+      signals.push(signal);
+      return [
+        { tsNs: `${fromMs + 1}000000`, line: 'a' },
+        { tsNs: `${fromMs + 2}000000`, line: 'b' },
+      ];
+    };
+    const pages: number[] = [];
+
+    await expect(
+      (async () => {
+        for await (const page of readForward(fetcher, 'x', 0, 100, 2, abort.signal)) {
+          pages.push(page.length);
+          abort.abort();
+        }
+      })()
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(pages).toEqual([2]);
+    expect(signals).toEqual([abort.signal]);
   });
 });
