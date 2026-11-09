@@ -131,8 +131,10 @@ export function useSessionData(params: {
   live?: boolean;
   /** Where the payload stream is split by session (app config); none: read the whole stream. */
   payloadBuckets?: PayloadBuckets;
+  /** For tests: the chunk loader's first retry pause (default 1 s, doubling). */
+  chunkRetryDelayMs?: number;
 }): SessionDataState & { focus: FocusReplay } {
-  const { lokiUid, sessionId, from, to, live = false, payloadBuckets } = params;
+  const { lokiUid, sessionId, from, to, live = false, payloadBuckets, chunkRetryDelayMs } = params;
   const bucketCount = payloadBuckets?.count;
   const bucketsSinceMs = payloadBuckets?.sinceMs;
   const fetcher = useMemo(() => createLokiFetcher(lokiUid), [lokiUid]);
@@ -268,6 +270,7 @@ export function useSessionData(params: {
         payloadStreamRef.current = stream;
         store.setIndex(index);
         const loader = new ChunkLoader({
+          retryDelayMs: chunkRetryDelayMs,
           load: (key, signal) => {
             const info = store.replay.chunkInfo(key);
             return info
@@ -344,7 +347,7 @@ export function useSessionData(params: {
       loaderRef.current?.dispose();
       loaderRef.current = null;
     };
-  }, [fetcher, sessionId, from, to, bucketCount, bucketsSinceMs, reprioritise]);
+  }, [fetcher, sessionId, from, to, bucketCount, bucketsSinceMs, reprioritise, chunkRetryDelayMs]);
 
   // Live mode: from the index's end on, fetch what arrived since the cursors —
   // new events, checkouts, reloads and tabs alike. The journey and the levels
