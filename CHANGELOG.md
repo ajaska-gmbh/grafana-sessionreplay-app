@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- Searching a lead id (or an email) typed into the sessions search finds its sessions again: Grafana's search input escaped regex characters, so `cc90db97-dce5-…` was looked up as `cc90db97\-dce5\-…` and matched nothing. Links holding the old escaping are read as the plain value (#19).
+
 ## 0.6.1
 
 - First published release of 0.6.0's progressive loading (the 0.6.0 release build failed on a timing-dependent test and was never published) (#18).
