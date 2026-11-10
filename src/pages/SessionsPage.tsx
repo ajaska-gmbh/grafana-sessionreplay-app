@@ -27,7 +27,7 @@ import {
   fetchMatchingSessionIds,
   fetchSessions,
 } from '../lib/sessionQueries';
-import { searchValue } from '../lib/sessionSearch';
+import { searchParam, searchValue } from '../lib/sessionSearch';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
@@ -85,7 +85,7 @@ function SessionsPage() {
   const [apps, setAppsState] = useState<string[]>(() => appsParam(params.get('apps')));
   const [appOptions, setAppOptions] = useState<Array<ComboboxOption<string>>>([]);
   const [environment, setEnvironment] = useState<string | undefined>();
-  const [search, setSearchState] = useState(() => params.get('q') ?? '');
+  const [search, setSearchState] = useState(() => searchParam(params.get('q')));
   const [result, setResult] = useState<QueryResult>();
   const [matches, setMatches] = useState<Matches>();
 
@@ -330,6 +330,9 @@ function SessionsPage() {
               }
               value={search}
               onChange={setSearch}
+              // The text is searched as typed: a lead id, user or email, never a regex. With the
+              // default (true) a typed `cc90db97-dce5-…` would arrive as `cc90db97\-dce5\-…`.
+              escapeRegex={false}
               data-testid={testIds.sessions.search}
             />
           </div>
