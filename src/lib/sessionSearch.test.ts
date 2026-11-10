@@ -1,4 +1,4 @@
-import { eventMatches, searchValue, sessionSearchQuery, validSearchFields } from './sessionSearch';
+import { eventMatches, searchParam, searchValue, sessionSearchQuery, validSearchFields } from './sessionSearch';
 
 describe('session search', () => {
   it('looks a value up exactly in the configured event attributes, quoted', () => {
@@ -37,5 +37,12 @@ describe('session search', () => {
     expect(eventMatches({ event_data_crm_lead_id: '42' }, ['lead_id', 'crm_lead_id'], '42')).toBe(true);
     expect(eventMatches({ event_data_crm_lead_id: '421' }, ['crm_lead_id'], '42')).toBe(false);
     expect(eventMatches({ event_data_crm_lead_id: '42' }, ['crm_lead_id'], undefined)).toBe(false);
+  });
+
+  it('reads the search from a link, without the old regex escaping', () => {
+    expect(searchParam(null)).toBe('');
+    expect(searchParam('cc90db97\\-dce5\\-11f1')).toBe('cc90db97-dce5-11f1');
+    expect(searchParam('agent\\.one@example\\.com')).toBe('agent.one@example.com');
+    expect(searchParam('48211')).toBe('48211');
   });
 });

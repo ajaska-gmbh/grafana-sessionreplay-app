@@ -14,6 +14,15 @@ export function validSearchFields(fields: unknown): string[] {
     : [];
 }
 
+/**
+ * The search text from a link's `q`. Links copied before 0.6.2 hold the
+ * search box's regex escaping (`cc90db97\-dce5\-…`); a lead id, user, email
+ * or page never contains a backslash, so they are dropped.
+ */
+export function searchParam(q: string | null): string {
+  return (q ?? '').replace(/\\(.)/g, '$1');
+}
+
 /** The value to look up, or undefined when there is nothing (sensible) to look up. */
 export function searchValue(text: string): string | undefined {
   const value = text.trim();
