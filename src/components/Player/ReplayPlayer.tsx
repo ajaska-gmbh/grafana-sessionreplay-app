@@ -961,6 +961,8 @@ const getStyles = (theme: GrafanaTheme2) => ({
   controls: css({
     display: 'flex',
     alignItems: 'center',
+    // Narrow players (phones, embeds) wrap the controls instead of clipping them.
+    flexWrap: 'wrap',
     gap: theme.spacing(1),
     padding: theme.spacing(0.5, 2, 1),
   }),
