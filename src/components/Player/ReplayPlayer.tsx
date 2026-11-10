@@ -36,6 +36,10 @@ import { AudioLevelTimeline } from './AudioLevelTimeline';
 
 export const SPEEDS = [0.5, 1, 2, 4, 8];
 const SKIP_MS = 10_000;
+/** Smallest height of the replayed page: below it the stage stops shrinking and the player grows instead. */
+const STAGE_MIN_HEIGHT = 160;
+/** The stage's height where the layout is content-sized (narrow screens). */
+const STAGE_MIN_HEIGHT_AUTO_LAYOUT = 300;
 /** Live playback trails the newest event by this much, so late batches still play in order. */
 export const LIVE_BUFFER_MS = 3000;
 
@@ -858,7 +862,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    minHeight: 420,
+    // Grows past the page's height rather than clip what is below the stage: the timeline,
+    // audio levels, call audio and the controls must always be reachable.
+    minHeight: 'min-content',
     background: theme.colors.background.primary,
     border: `1px solid ${theme.colors.border.weak}`,
     borderRadius: theme.shape.radius.default,
@@ -886,7 +892,11 @@ const getStyles = (theme: GrafanaTheme2) => ({
   stage: css({
     position: 'relative',
     flex: 1,
-    minHeight: 300,
+    // The stage gives way first on short screens (rrweb scales the page to fit).
+    minHeight: STAGE_MIN_HEIGHT,
+    // Below lg the replay page's layout is content-sized (SessionReplay), so the stage is
+    // only ever its minimum there: keep it readable.
+    [theme.breakpoints.down('lg')]: { minHeight: STAGE_MIN_HEIGHT_AUTO_LAYOUT },
     overflow: 'hidden',
     background: theme.colors.background.canvas,
     '.replayer-wrapper': { background: '#fff' },
@@ -951,6 +961,8 @@ const getStyles = (theme: GrafanaTheme2) => ({
   controls: css({
     display: 'flex',
     alignItems: 'center',
+    // Narrow players (phones, embeds) wrap the controls instead of clipping them.
+    flexWrap: 'wrap',
     gap: theme.spacing(1),
     padding: theme.spacing(0.5, 2, 1),
   }),
