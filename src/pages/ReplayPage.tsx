@@ -7,6 +7,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { SessionReplay } from '../components/SessionReplay/SessionReplay';
 import { PLUGIN_BASE_URL, ROUTES } from '../constants';
 import { useSettings } from '../hooks/useSettings';
+import { searchParam } from '../lib/sessionSearch';
 
 function numberParam(value: string | null): number | undefined {
   if (value === null || value.trim() === '') {
@@ -44,7 +45,7 @@ function ReplayPage() {
           t={numberParam(searchParams.get('t'))}
           track={numberParam(searchParams.get('track'))}
           live={searchParams.get('live') === '1'}
-          highlight={searchParams.get('q') ?? undefined}
+          highlight={searchParam(searchParams.get('q')) || undefined}
           searchFields={searchFields}
           recorder={recorder}
           payloadBuckets={payloadBuckets}
