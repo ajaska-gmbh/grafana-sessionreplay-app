@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- Agents: everyone with a recorded session on a day, live first; an agent's whole day on one timeline (sessions, calls, time away from the app), played session after session, with Go live (sound). Links name the day and an absolute time (#23).
+
 ## 0.7.1
 
 - Live: a "Turn on sound" button where the browser holds the sound back (a live link plays without a click); the live badge shows the real delay behind the agent; `/session/<id>?live=1` keeps live (and a search) on its redirect (#22).
