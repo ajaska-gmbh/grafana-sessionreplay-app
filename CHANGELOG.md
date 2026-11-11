@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+
+- Live with sound: a live session plays the agent's call audio, about 15 s behind the agent (switch to without sound for ~5 s). Live loads from where it starts, starts at the newest page snapshot before that point, keeps its clock running on a quiet page, and lists the newest call audio every 3 s (needs call-recorder v0.2.0) (#21).
+
 ## 0.6.3
 
 - The player's controls (play, time, go-to, share) are never cut off: on short screens the replayed page shrinks (to 160 px) and the player grows rather than clipping what is below it; on narrow players the controls wrap (#20).
