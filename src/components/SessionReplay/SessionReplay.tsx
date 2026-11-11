@@ -284,6 +284,8 @@ export function SessionReplay(props: SessionReplayProps) {
             onShare={onShare}
             live={live}
             liveStartMs={liveStartMs}
+            liveClockKnown={clockOffsetsOf(data.journey).length > 0}
+            liveReceivedAtMs={data.lastReplayMs}
             onExitLive={() => setLive(false)}
           />
         ) : noRecording ? (

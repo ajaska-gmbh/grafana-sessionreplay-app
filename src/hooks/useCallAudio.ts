@@ -186,10 +186,14 @@ export function useCallAudio(options: {
     audible,
     blocked,
     unlock: () => {
-      void engineRef.current?.unlock().then(() => {
-        blockedRef.current = Boolean(engineRef.current?.isBlocked());
-        setBlocked(blockedRef.current);
-      });
+      void engineRef.current
+        ?.unlock()
+        // A closed context (left the page meanwhile): nothing to unlock.
+        .catch(() => undefined)
+        .then(() => {
+          blockedRef.current = Boolean(engineRef.current?.isBlocked());
+          setBlocked(blockedRef.current);
+        });
     },
     toggle: (track) =>
       setAudible((previous) => {

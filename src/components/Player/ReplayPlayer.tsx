@@ -79,6 +79,10 @@ export interface ReplayPlayerProps {
    * plays every appended event LIVE_BUFFER_MS behind the newest one.
    */
   live?: boolean;
+  /** Live: whether the recording computer's clock offset was measured (the dialer): the delay is then exact. */
+  liveClockKnown?: boolean;
+  /** Live: Loki receive time (epoch ms) of the newest event, to estimate the delay without a known clock. */
+  liveReceivedAtMs?: number;
   /**
    * Live: rrweb time (the recording computer's clock) to start playing at, held
    * this far behind the user for good (call audio arrives ~15 s late). Without
@@ -134,6 +138,8 @@ export function ReplayPlayer({
   autoPlay = false,
   live = false,
   liveStartMs,
+  liveClockKnown = false,
+  liveReceivedAtMs,
   onExitLive,
 }: ReplayPlayerProps) {
   const styles = useStyles2(getStyles);
@@ -203,6 +209,12 @@ export function ReplayPlayer({
   /** Live: how far playback trails the user (ms). */
   const [liveLagMs, setLiveLagMs] = useState(0);
   const newestEventRef = useRef(0);
+  const liveClockKnownRef = useRef(liveClockKnown);
+  const receivedAtRef = useRef(liveReceivedAtMs);
+  useEffect(() => {
+    liveClockKnownRef.current = liveClockKnown;
+    receivedAtRef.current = liveReceivedAtMs;
+  }, [liveClockKnown, liveReceivedAtMs]);
   /** Live: rrweb time of the snapshot live playback started from. */
   const liveBaselineRef = useRef(Infinity);
 
@@ -268,8 +280,14 @@ export function ReplayPlayer({
         playing: playingRef.current && current >= 0,
       });
       // How far playback is behind the user now: the user's computer's time
-      // (ours minus the measured offset) minus the playhead's.
-      const lag = Math.max(0, Date.now() - clock.get().clockOffsetMs - (meta.startTime + current));
+      // (ours minus the measured offset) minus the playhead's. Without a
+      // measured offset (apps other than the dialer) the computer's clock may
+      // be off: then how far playback trails the newest event, plus how long
+      // ago that arrived.
+      const lag = liveClockKnownRef.current
+        ? Math.max(0, Date.now() - clock.get().clockOffsetMs - (meta.startTime + current))
+        : Math.max(0, newestEventRef.current - (meta.startTime + current)) +
+          (receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0);
       setLiveLagMs((previous) => (Math.round(previous / 1000) === Math.round(lag / 1000) ? previous : lag));
       const url = pageAt(trackRef.current.pages, meta.startTime + current);
       const title = replayer.iframe.contentDocument?.title || undefined;
