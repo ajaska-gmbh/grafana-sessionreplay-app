@@ -373,7 +373,7 @@ export function useSessionData(params: {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    /** Given-up newest chunks: retried with growing pauses (live shows nothing without them). */
+    /** Given-up chunks live needs (from where it starts on): retried with growing pauses (live shows nothing without them). */
     const rounds = new Map<string, { atMs: number; count: number }>();
     const retryNewest = (nowMs: number) => {
       const loader = loaderRef.current;
@@ -381,8 +381,14 @@ export function useSessionData(params: {
         return;
       }
       let retried = false;
+      const focused = store.tracks[focusRef.current.track] ?? store.tracks[0];
+      const liveFrom = focusRef.current.offsetMs ?? Infinity;
       for (const track of store.tracks) {
-        for (const chunk of withDependencies(track, track.chunks.length - 1)) {
+        const needed =
+          track === focused && Number.isFinite(liveFrom)
+            ? chunksFrom(track, liveFrom).map((key) => track.chunks.find((chunk) => chunk.key === key)!)
+            : withDependencies(track, track.chunks.length - 1);
+        for (const chunk of needed) {
           const last = rounds.get(chunk.key) ?? { atMs: 0, count: 0 };
           if (chunk.failed && nowMs - last.atMs >= liveRetryDelayMs(last.count)) {
             rounds.set(chunk.key, { atMs: nowMs, count: last.count + 1 });

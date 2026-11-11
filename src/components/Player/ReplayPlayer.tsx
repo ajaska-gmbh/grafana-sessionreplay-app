@@ -167,6 +167,8 @@ export function ReplayPlayer({
   }, [onTarget]);
 
   const [playing, setPlaying] = useState(false);
+  const playingRef = useRef(false);
+  playingRef.current = playing;
   /** The user wants playback (also while it waits for a chunk). */
   const [wantPlay, setWantPlay] = useState(autoPlay);
   const wantPlayRef = useRef(autoPlay);
@@ -259,9 +261,17 @@ export function ReplayPlayer({
       }
       const meta = replayer.getMetaData();
       // rrweb's live timer runs on while the page is quiet: so does the clock
-      // (call audio follows it), past the newest event if need be.
-      const current = Math.max(0, replayer.getCurrentTime());
-      clock.update({ offsetMs: current, totalMs: Math.max(meta.totalTime, current), startTimeMs: meta.startTime });
+      // (call audio follows it), past the newest event if need be; the length
+      // in whole seconds, so a quiet page does not re-render every frame.
+      // Before the first snapshot (a page loaded less than the live delay ago)
+      // rrweb's time is negative: the audio waits with the page.
+      const current = replayer.getCurrentTime();
+      clock.update({
+        offsetMs: Math.max(0, current),
+        totalMs: Math.ceil(Math.max(meta.totalTime, current) / 1000) * 1000,
+        startTimeMs: meta.startTime,
+        playing: playingRef.current && current >= 0,
+      });
       // Playback trails the newest event (buffer), which itself arrived some time ago.
       const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
       const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;

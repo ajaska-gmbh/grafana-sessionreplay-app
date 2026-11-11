@@ -140,7 +140,7 @@ export function SessionReplay(props: SessionReplayProps) {
     live,
   });
   // Live starts once the journey says whether there is call audio, so it starts once, in the right mode.
-  const liveReady = !live || !data.loadingJourney;
+  const liveReady = !live || !props.recorder || !data.loadingJourney;
   const withSound = liveReady && live && liveSound && callAudio.available;
   // Fixed when live with sound starts (React's "adjust state when an input changes"):
   // the agent's computer's "now" this far back, as rrweb times are on its clock.
