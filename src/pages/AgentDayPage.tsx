@@ -153,6 +153,8 @@ function AgentDayPage() {
   // or the session still running then. Only once the clock is this session's
   // (play() clears it) and after it was playing.
   const wasPlaying = useRef(false);
+  /** The playback already moved on from (session and nonce): a late frame of it must not move on twice. */
+  const advancedFrom = useRef<string>();
   useClockEffect(clock, (state) => {
     if (!current || current.live || state.startTimeMs === undefined) {
       wasPlaying.current = false;
@@ -163,9 +165,11 @@ function AgentDayPage() {
       (state.playing && wallMs >= current.span.endMs - END_MARGIN_MS) ||
       (wasPlaying.current && !state.playing && state.totalMs > 0 && state.offsetMs >= state.totalMs - END_MARGIN_MS);
     wasPlaying.current = state.playing;
-    if (ended && wallMs >= current.span.startMs) {
+    const from = `${current.span.session.sessionId}|${current.nonce}`;
+    if (ended && wallMs >= current.span.startMs && advancedFrom.current !== from) {
       const next = after(data.spans, current.span);
       if (next) {
+        advancedFrom.current = from;
         wasPlaying.current = false;
         play(next.span, next.atMs);
       }
