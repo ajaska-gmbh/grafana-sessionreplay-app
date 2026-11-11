@@ -127,6 +127,8 @@ export function useSessionData(params: {
   to?: number;
   /** The link's start offset and tab: loaded first. */
   t?: number;
+  /** Start at this rrweb time instead (the agent's day): loaded first. */
+  atMs?: number;
   track?: number;
   live?: boolean;
   /** Where the payload stream is split by session (app config); none: read the whole stream. */
@@ -147,7 +149,7 @@ export function useSessionData(params: {
     track: params.track ?? 0,
     live,
   });
-  const linkRef = useRef({ t: params.t, live });
+  const linkRef = useRef({ t: params.t, atMs: params.atMs, live });
   /** Publishes the store's state (set by the load effect). */
   const publishRef = useRef<() => void>(() => undefined);
   const [state, setState] = useState<SessionDataState>({
@@ -296,7 +298,11 @@ export function useSessionData(params: {
           // The link's target until the player names one; live starts at the end.
           const track = store.tracks[focusRef.current.track] ?? store.tracks[0];
           focusRef.current.offsetMs =
-            linkRef.current.live || !track ? Infinity : linkOffset(track, from, linkRef.current.t);
+            linkRef.current.live || !track
+              ? Infinity
+              : linkRef.current.atMs !== undefined
+                ? Math.max(0, linkRef.current.atMs - track.startMs)
+                : linkOffset(track, from, linkRef.current.t);
         }
         reprioritise();
         update({ loadingReplay: false });
