@@ -168,7 +168,9 @@ export function ReplayPlayer({
 
   const [playing, setPlaying] = useState(false);
   const playingRef = useRef(false);
-  playingRef.current = playing;
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
   /** The user wants playback (also while it waits for a chunk). */
   const [wantPlay, setWantPlay] = useState(autoPlay);
   const wantPlayRef = useRef(autoPlay);
