@@ -2,7 +2,7 @@ jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
 import { of } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
-import { fetchSegmentAudio, listSessionAudio } from './recorderClient';
+import { fetchSegmentAudio, listSessionAudio, mergeSegments, noSegments } from './recorderClient';
 
 import plugin from '../plugin.json';
 
@@ -97,5 +97,22 @@ describe('recorder client', () => {
         url: expect.stringContaining('audio?key=v1%2Fbrowser%2Fe%2F7'),
       })
     );
+  });
+
+  it('merges a live tail into what is known, by key, sorted, keeping unchanged tracks', () => {
+    const seg = (key: string, startMs: number, track: 'mic' | 'heard' = 'mic') => ({
+      key,
+      track,
+      startMs,
+      durationMs: 10_000,
+    });
+    const known = { mic: [seg('a', 0), seg('b', 10_000)], heard: [seg('h', 0, 'heard')] };
+    const tail = { mic: [seg('b', 10_000), seg('c', 20_000)], heard: [] };
+
+    const merged = mergeSegments(known, tail);
+
+    expect(merged.mic.map((s) => s.key)).toEqual(['a', 'b', 'c']);
+    expect(merged.heard).toBe(known.heard);
+    expect(mergeSegments(known, noSegments()).mic).toBe(known.mic);
   });
 });

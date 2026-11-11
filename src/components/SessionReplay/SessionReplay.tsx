@@ -42,6 +42,18 @@ export interface SessionReplayProps {
   height?: number | string;
 }
 
+/**
+ * Live with sound trails the agent by this much: a segment of call audio
+ * (10 s) is listed only once it ended and reached the bucket (~1 s), and the
+ * live tail lists every 3 s. Without sound, live trails by LIVE_BUFFER_MS.
+ */
+export const LIVE_SOUND_DELAY_MS = 15_000;
+
+/** Where live with sound starts: the agent's computer's time LIVE_SOUND_DELAY_MS ago. */
+export function liveStartAt(clockOffsetMs: number, nowMs = Date.now()): number {
+  return nowMs - clockOffsetMs - LIVE_SOUND_DELAY_MS;
+}
+
 /** The nonce of the one seek to a search match; the player's own seeks use the time. */
 const MATCH_SEEK_NONCE = 1;
 
@@ -98,10 +110,9 @@ export function SessionReplay(props: SessionReplayProps) {
   // The link's `t` counts from where its own range started; loading starts earlier (all Metas are in the index).
   const initialOffsetMs = !current ? undefined : track !== (props.track ?? 0) ? 0 : linkOffset(current, from, t);
   const { focus } = data;
-  const onTarget = useCallback(
-    (offsetMs: number) => focus(track, live ? Infinity : offsetMs, live),
-    [focus, track, live]
-  );
+  // Live with sound: where live starts (rrweb time), fixed when it starts. Set
+  // once the session is known to have call audio; changing it restarts the player.
+  const [liveSound, setLiveSound] = useState(true);
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
@@ -128,6 +139,22 @@ export function SessionReplay(props: SessionReplayProps) {
     enabled: Boolean(props.recorder),
     live,
   });
+  // Live starts once the journey says whether there is call audio, so it starts once, in the right mode.
+  const liveReady = !live || !props.recorder || !data.loadingJourney;
+  const withSound = liveReady && live && liveSound && callAudio.available;
+  // Fixed when live with sound starts (React's "adjust state when an input changes"):
+  // the agent's computer's "now" this far back, as rrweb times are on its clock.
+  const [liveStart, setLiveStart] = useState<{ withSound: boolean; ms?: number }>({ withSound: false });
+  if (liveStart.withSound !== withSound) {
+    setLiveStart({ withSound, ms: withSound ? liveStartAt(clockOffsetMs) : undefined });
+  }
+  const liveStartMs = liveStart.withSound === withSound ? liveStart.ms : undefined;
+  const liveStartKnown = !withSound || liveStartMs !== undefined;
+  const liveStartOffsetMs = live && liveStartMs !== undefined && current ? liveStartMs - current.startMs : Infinity;
+  const onTarget = useCallback(
+    (offsetMs: number) => focus(track, live ? liveStartOffsetMs : offsetMs, live),
+    [focus, track, live, liveStartOffsetMs]
+  );
   const seekTo = useCallback((offsetMs: number) => setSeekRequest({ offsetMs, nonce: Date.now() }), []);
   const isHighlighted = useMemo(
     () =>
@@ -208,6 +235,18 @@ export function SessionReplay(props: SessionReplayProps) {
           <div className={styles.liveBar}>
             {live ? (
               <span>
+                {callAudio.available && (
+                  <RadioButtonGroup
+                    size="sm"
+                    className={styles.soundSwitch}
+                    options={[
+                      { label: 'With sound', value: true, description: `~${LIVE_SOUND_DELAY_MS / 1000} s behind` },
+                      { label: 'Without sound', value: false, description: 'a few seconds behind' },
+                    ]}
+                    value={liveSound}
+                    onChange={setLiveSound}
+                  />
+                )}
                 Following the session live (new events every few seconds).
                 {sinceLastEventMs !== undefined && sinceLastEventMs > 30_000 && (
                   <> No new recording data for {formatClock(sinceLastEventMs)}: the user may be idle or gone.</>
@@ -224,9 +263,9 @@ export function SessionReplay(props: SessionReplayProps) {
             )}
           </div>
         )}
-        {current && initialOffsetMs !== undefined ? (
+        {current && initialOffsetMs !== undefined && liveReady && liveStartKnown ? (
           <ReplayPlayer
-            key={`${track}-${live ? 'live' : 'replay'}`}
+            key={`${track}-${live ? `live-${liveStartMs ?? 'newest'}` : 'replay'}`}
             track={current}
             onTarget={onTarget}
             initialOffsetMs={initialOffsetMs}
@@ -240,6 +279,7 @@ export function SessionReplay(props: SessionReplayProps) {
             onShare={onShare}
             live={live}
             liveReceivedAtMs={data.lastReplayMs}
+            liveStartMs={liveStartMs}
             onExitLive={() => setLive(false)}
           />
         ) : noRecording ? (
@@ -289,6 +329,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   journey: css({ minWidth: 0, minHeight: 0, [theme.breakpoints.down('lg')]: { height: 480 } }),
   note: css({ color: theme.colors.text.secondary, fontSize: theme.typography.bodySmall.fontSize }),
   tracks: css({ display: 'flex', alignItems: 'center', gap: theme.spacing(1), flexWrap: 'wrap' }),
+  soundSwitch: css({ marginRight: theme.spacing(1) }),
   liveBar: css({
     display: 'flex',
     alignItems: 'center',

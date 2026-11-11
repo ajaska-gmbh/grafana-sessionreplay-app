@@ -6,7 +6,7 @@ import { createLokiFetcher, isAbortError, readForward, type LokiFetcher } from '
 import { eventLineFilter, sessionLineFilter, STREAMS } from '../lib/logql';
 import { linkOffset } from '../lib/playerEvents';
 import type { DecodedReplayEvent, ReplayTrack } from '../lib/replayEvents';
-import { chunkIndexAt, withDependencies } from '../lib/replayFeed';
+import { chunkIndexAt, chunksFrom, withDependencies } from '../lib/replayFeed';
 import { fetchChunk, fetchReplayIndex } from '../lib/replaySource';
 import type { PayloadBuckets } from '../lib/sessionBucket';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
@@ -178,10 +178,15 @@ export function useSessionData(params: {
     }
     const others = tracks.filter((track) => track !== focused);
     const newest = (track: ReplayTrack) => withDependencies(track, track.chunks.length - 1).map((chunk) => chunk.key);
-    // Live plays only from the newest checkout on: older chunks would only cost
-    // Loki scans (they load once live is left and the player asks for them).
+    // Live plays from where it starts (the newest checkout, or further back
+    // with sound) on: older chunks would only cost Loki scans (they load once
+    // live is left and the player asks for them).
+    const liveOffset = focusRef.current.offsetMs ?? Infinity;
     const order = focusRef.current.live
-      ? [...newest(focused), ...others.flatMap(newest)]
+      ? [
+          ...(Number.isFinite(liveOffset) ? chunksFrom(focused, liveOffset) : newest(focused)),
+          ...others.flatMap(newest),
+        ]
       : [
           ...priorityOrder(focused.chunks, chunkIndexAt(focused, focusRef.current.offsetMs ?? Infinity)),
           ...others.flatMap((track) => track.chunks.map((chunk) => chunk.key)),
@@ -368,7 +373,7 @@ export function useSessionData(params: {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    /** Given-up newest chunks: retried with growing pauses (live shows nothing without them). */
+    /** Given-up chunks live needs (from where it starts on): retried with growing pauses (live shows nothing without them). */
     const rounds = new Map<string, { atMs: number; count: number }>();
     const retryNewest = (nowMs: number) => {
       const loader = loaderRef.current;
@@ -376,8 +381,14 @@ export function useSessionData(params: {
         return;
       }
       let retried = false;
+      const focused = store.tracks[focusRef.current.track] ?? store.tracks[0];
+      const liveFrom = focusRef.current.offsetMs ?? Infinity;
       for (const track of store.tracks) {
-        for (const chunk of withDependencies(track, track.chunks.length - 1)) {
+        const needed =
+          track === focused && Number.isFinite(liveFrom)
+            ? chunksFrom(track, liveFrom).map((key) => track.chunks.find((chunk) => chunk.key === key)!)
+            : withDependencies(track, track.chunks.length - 1);
+        for (const chunk of needed) {
           const last = rounds.get(chunk.key) ?? { atMs: 0, count: 0 };
           if (chunk.failed && nowMs - last.atMs >= liveRetryDelayMs(last.count)) {
             rounds.set(chunk.key, { atMs: nowMs, count: last.count + 1 });

@@ -2,12 +2,21 @@ import type { eventWithTime } from '@grafana/rrweb-types';
 import { RRWEB_FULL_SNAPSHOT, RRWEB_META } from './replayEvents';
 
 /**
- * Where live playback starts: the Meta event before the last full snapshot.
+ * Where live playback starts: the Meta event before the last full snapshot
+ * at or before `baselineMs` (rrweb time live playback starts at), so the page
+ * is there at once; a snapshot after it would leave the stage blank until
+ * playback reaches it. Without one at or before it, the first snapshot.
  * Everything from there is applied at once; older events are not needed.
  */
-export function liveStartIndex(events: eventWithTime[]): number {
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === RRWEB_FULL_SNAPSHOT) {
+export function liveStartIndex(events: eventWithTime[], baselineMs = Infinity): number {
+  const index = snapshotIndex(events, baselineMs);
+  return index === undefined ? (snapshotIndex(events, Infinity, true) ?? 0) : index;
+}
+
+function snapshotIndex(events: eventWithTime[], atOrBeforeMs: number, first = false): number | undefined {
+  const order = first ? events.map((_, i) => i) : events.map((_, i) => events.length - 1 - i);
+  for (const i of order) {
+    if (events[i].type === RRWEB_FULL_SNAPSHOT && events[i].timestamp <= atOrBeforeMs) {
       for (let j = i - 1; j >= 0; j--) {
         if (events[j].type === RRWEB_META) {
           return j;
@@ -16,7 +25,7 @@ export function liveStartIndex(events: eventWithTime[]): number {
       return i;
     }
   }
-  return 0;
+  return undefined;
 }
 
 export interface PageChange {

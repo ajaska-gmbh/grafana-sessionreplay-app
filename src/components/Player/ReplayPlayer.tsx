@@ -19,11 +19,10 @@ import {
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
 import { liveStartIndex, pageAt } from '../../lib/playerEvents';
-import type { ReplayTrack } from '../../lib/replayEvents';
+import type { ReplayChunk, ReplayTrack } from '../../lib/replayEvents';
 import {
   afterRun,
   chunkIndexAt,
-  isReady,
   readyAt,
   withDependencies,
   trackLength,
@@ -82,6 +81,12 @@ export interface ReplayPlayerProps {
   live?: boolean;
   /** Live: Loki receive time (epoch ms) of the newest event, to estimate the real lag. */
   liveReceivedAtMs?: number;
+  /**
+   * Live: rrweb time (the recording computer's clock) to start playing at, held
+   * this far behind the user for good (call audio arrives ~15 s late). Without
+   * it, live trails the newest event by LIVE_BUFFER_MS.
+   */
+  liveStartMs?: number;
   onExitLive?: () => void;
 }
 
@@ -131,6 +136,7 @@ export function ReplayPlayer({
   autoPlay = false,
   live = false,
   liveReceivedAtMs,
+  liveStartMs,
   onExitLive,
 }: ReplayPlayerProps) {
   const styles = useStyles2(getStyles);
@@ -161,6 +167,10 @@ export function ReplayPlayer({
   }, [onTarget]);
 
   const [playing, setPlaying] = useState(false);
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
   /** The user wants playback (also while it waits for a chunk). */
   const [wantPlay, setWantPlay] = useState(autoPlay);
   const wantPlayRef = useRef(autoPlay);
@@ -210,12 +220,18 @@ export function ReplayPlayer({
     if (!live || track.chunks.length === 0) {
       return undefined;
     }
-    const newest = withDependencies(track, track.chunks.length - 1);
-    if (newest.every((chunk) => chunk.loaded)) {
+    // From the chunk live starts in (the newest without liveStartMs) on.
+    const first =
+      liveStartMs === undefined ? track.chunks.length - 1 : chunkIndexAt(track, liveStartMs - track.startMs);
+    const needed = new Set<ReplayChunk>();
+    for (let index = first; index < track.chunks.length; index++) {
+      withDependencies(track, index).forEach((chunk) => needed.add(chunk));
+    }
+    if ([...needed].every((chunk) => chunk.loaded)) {
       return undefined;
     }
-    return newest.some((chunk) => chunk.failed) ? 'failed' : 'loading';
-  }, [live, track]);
+    return [...needed].some((chunk) => chunk.failed) ? 'failed' : 'loading';
+  }, [live, track, liveStartMs]);
   const shownWaiting = live ? liveWaiting : waiting;
   const unloaded = useMemo(() => (live ? [] : unloadedSpans(track)), [live, track]);
   const audioSegments = useMemo(
@@ -246,8 +262,18 @@ export function ReplayPlayer({
         return;
       }
       const meta = replayer.getMetaData();
-      const current = Math.min(replayer.getCurrentTime(), meta.totalTime);
-      clock.update({ offsetMs: current, totalMs: meta.totalTime, startTimeMs: meta.startTime });
+      // rrweb's live timer runs on while the page is quiet: so does the clock
+      // (call audio follows it), past the newest event if need be; the length
+      // in whole seconds, so a quiet page does not re-render every frame.
+      // Before the first snapshot (a page loaded less than the live delay ago)
+      // rrweb's time is negative: the audio waits with the page.
+      const current = replayer.getCurrentTime();
+      clock.update({
+        offsetMs: Math.max(0, current),
+        totalMs: Math.ceil(Math.max(meta.totalTime, current) / 1000) * 1000,
+        startTimeMs: meta.startTime,
+        playing: playingRef.current && current >= 0,
+      });
       // Playback trails the newest event (buffer), which itself arrived some time ago.
       const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
       const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;
@@ -399,7 +425,7 @@ export function ReplayPlayer({
   // Live: create the replayer once the newest chunk is loaded; afterwards
   // append what live polling brings in.
   useEffect(() => {
-    if (!live || liveEvents.length === 0 || !mountRef.current || !isReady(track, track.chunks.length - 1)) {
+    if (!live || liveEvents.length === 0 || !mountRef.current || liveWaiting !== undefined) {
       return;
     }
     let replayer = replayerRef.current;
@@ -419,8 +445,10 @@ export function ReplayPlayer({
         UNSAFE_replayCanvas: false,
       });
       attach(replayer);
-      replayer.startLive(liveEvents[liveEvents.length - 1].timestamp - LIVE_BUFFER_MS);
-      const from = liveStartIndex(liveEvents);
+      // Never later than the newest event allows (Loki may be behind the target).
+      const baseline = Math.min(liveStartMs ?? Infinity, liveEvents[liveEvents.length - 1].timestamp - LIVE_BUFFER_MS);
+      replayer.startLive(baseline);
+      const from = liveStartIndex(liveEvents, baseline);
       liveBaselineRef.current = liveEvents[from].timestamp;
       liveEvents.forEach((event, index) => {
         if (index >= from) {

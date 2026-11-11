@@ -6,6 +6,7 @@ import { ReplayTimeline, type ReplayTrack } from './replayEvents';
 import {
   afterRun,
   chunkIndexAt,
+  chunksFrom,
   isReady,
   nextChunkOffset,
   readyAt,
@@ -125,6 +126,19 @@ describe('track geometry', () => {
       { fromMs: 20 * MIN, toMs: 29 * MIN },
     ]);
     expect(unloadedSpans(track([0, 1, 2, 3, 4, 5]))).toEqual([]);
+  });
+
+  it('names the chunks live needs from a start point on, with their dependencies', () => {
+    const empty = track([]);
+    const keys = empty.chunks.map((chunk) => chunk.key);
+
+    expect(chunksFrom(empty, 26 * MIN)).toEqual(keys.slice(5));
+    expect(chunksFrom(empty, 22 * MIN)).toEqual(keys.slice(4));
+    const gap = {
+      ...empty,
+      chunks: empty.chunks.map((chunk, index) => (index === 5 ? { ...chunk, dependsOn: keys[4] } : chunk)),
+    };
+    expect(chunksFrom(gap, 26 * MIN)).toEqual([keys[4], keys[5]]);
   });
 
   it('is ready where the chunk and what it depends on are loaded', () => {
