@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Live: a "Turn on sound" button where the browser holds the sound back (a live link plays without a click); the live badge shows the real delay behind the agent; `/session/<id>?live=1` keeps live (and a search) on its redirect (#22).
+
 ## 0.7.0
 
 - Live with sound: a live session plays the agent's call audio, about 15 s behind the agent (switch to without sound for ~5 s). Live loads from where it starts, starts at the newest page snapshot before that point, keeps its clock running on a quiet page, and lists the newest call audio every 3 s (needs call-recorder v0.2.0) (#21).
