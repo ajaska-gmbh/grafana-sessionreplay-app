@@ -21,6 +21,8 @@ function audio(patch: Partial<CallAudio> = {}): CallAudio {
     setVolume: jest.fn(),
     stereo: false,
     setStereo: jest.fn(),
+    blocked: false,
+    unlock: jest.fn(),
     ...patch,
   };
 }

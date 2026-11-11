@@ -247,6 +247,11 @@ export function SessionReplay(props: SessionReplayProps) {
                     onChange={setLiveSound}
                   />
                 )}
+                {withSound && callAudio.blocked && (
+                  <Button size="sm" icon="play" className={styles.soundSwitch} onClick={callAudio.unlock}>
+                    Turn on sound
+                  </Button>
+                )}
                 Following the session live (new events every few seconds).
                 {sinceLastEventMs !== undefined && sinceLastEventMs > 30_000 && (
                   <> No new recording data for {formatClock(sinceLastEventMs)}: the user may be idle or gone.</>
@@ -278,8 +283,9 @@ export function SessionReplay(props: SessionReplayProps) {
             }
             onShare={onShare}
             live={live}
-            liveReceivedAtMs={data.lastReplayMs}
             liveStartMs={liveStartMs}
+            liveClockKnown={clockOffsetsOf(data.journey).length > 0}
+            liveReceivedAtMs={data.lastReplayMs}
             onExitLive={() => setLive(false)}
           />
         ) : noRecording ? (

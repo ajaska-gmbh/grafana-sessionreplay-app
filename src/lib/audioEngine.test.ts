@@ -95,6 +95,26 @@ describe('call audio engine', () => {
     ]);
   });
 
+  it('says when the browser holds the audio back, and plays once unlocked from a click', async () => {
+    const { engine, context, sources } = engineWith({ mic: [seg('mic', 1_000_000)] }, ['mic']);
+    (context as { state: AudioContextState }).state = 'suspended';
+    context.resume = jest.fn(async () => {});
+
+    expect(engine.isBlocked()).toBe(false); // no context before anything plays
+    engine.sync(clock({ offsetMs: 2_000 }));
+    await settle();
+    expect(engine.isBlocked()).toBe(true);
+
+    context.resume = jest.fn(async () => {
+      (context as { state: AudioContextState }).state = 'running';
+    });
+    await engine.unlock();
+    await settle();
+    expect(context.resume).toHaveBeenCalled();
+    expect(engine.isBlocked()).toBe(false);
+    expect(sources.some((source) => source.started && !source.stopped)).toBe(true);
+  });
+
   it('keeps playing while in step, and moves back onto the clock when it drifts', async () => {
     const { engine, sources, context } = engineWith({ mic: [seg('mic', 1_000_000)] }, ['mic']);
     engine.sync(clock({ offsetMs: 0 }));
