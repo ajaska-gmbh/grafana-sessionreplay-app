@@ -29,6 +29,12 @@ export interface SessionReplayProps {
   track?: number;
   /** Start in live mode (follow the session as it is recorded). */
   live?: boolean;
+  /** Start at this rrweb time (epoch ms, the recording computer's clock) instead of `t`: the agent's day. */
+  atMs?: number;
+  /** Start playing at once (the agent's day moving on to the next session). */
+  autoPlay?: boolean;
+  /** The player's time, for a page that follows it (the agent's day); one of its own when not given. */
+  clock?: PlayerClock;
   lokiUid: string;
   tempoUid: string;
   /** Whether the call recorder is configured (app config): then the session's call audio is played with it. */
@@ -52,6 +58,16 @@ export const LIVE_SOUND_DELAY_MS = 15_000;
 /** Where live with sound starts: the agent's computer's time LIVE_SOUND_DELAY_MS ago. */
 export function liveStartAt(clockOffsetMs: number, nowMs = Date.now()): number {
   return nowMs - clockOffsetMs - LIVE_SOUND_DELAY_MS;
+}
+
+/** The tab (track) recording at `atMs`: the first whose span contains it, else the first to start after it. */
+export function tabAt(tracks: ReadonlyArray<{ startMs: number; endMs?: number }>, atMs: number): number | undefined {
+  const containing = tracks.findIndex((track) => track.startMs <= atMs && atMs < (track.endMs ?? Infinity));
+  if (containing !== -1) {
+    return containing;
+  }
+  const next = tracks.findIndex((track) => track.startMs > atMs);
+  return next === -1 ? undefined : next;
 }
 
 /** The nonce of the one seek to a search match; the player's own seeks use the time. */
@@ -92,6 +108,7 @@ export function SessionReplay(props: SessionReplayProps) {
     from,
     to,
     t,
+    atMs: props.atMs,
     track: props.track,
     live,
     payloadBuckets: props.payloadBuckets,
@@ -101,14 +118,22 @@ export function SessionReplay(props: SessionReplayProps) {
   const active = sinceLastEventMs !== undefined && sinceLastEventMs < LIVE_WINDOW_MS;
   const [seekRequest, setSeekRequest] = useState<SeekRequest>();
   // The player's time, shared with the journey without re-rendering this view every frame.
-  const [clock] = useState(() => new PlayerClock());
-  const [selectedTrack, setSelectedTrack] = useState(props.track ?? 0);
+  const [clock] = useState(() => props.clock ?? new PlayerClock());
+  const [selectedTrack, setSelectedTrack] = useState<number>();
 
-  const track = Math.min(selectedTrack, Math.max(0, data.tracks.length - 1));
+  // The day page names a time, not a tab: the tab recording then.
+  const trackAtStart = props.atMs === undefined ? undefined : tabAt(data.tracks, props.atMs);
+  const track = Math.min(selectedTrack ?? props.track ?? trackAtStart ?? 0, Math.max(0, data.tracks.length - 1));
   const current = data.tracks[track];
   const recordingStartMs = current?.startMs;
   // The link's `t` counts from where its own range started; loading starts earlier (all Metas are in the index).
-  const initialOffsetMs = !current ? undefined : track !== (props.track ?? 0) ? 0 : linkOffset(current, from, t);
+  const initialOffsetMs = !current
+    ? undefined
+    : selectedTrack !== undefined
+      ? 0
+      : props.atMs !== undefined
+        ? Math.max(0, props.atMs - current.startMs)
+        : linkOffset(current, from, t);
   const { focus } = data;
   // Live with sound: where live starts (rrweb time), fixed when it starts. Set
   // once the session is known to have call audio; changing it restarts the player.
@@ -282,6 +307,7 @@ export function SessionReplay(props: SessionReplayProps) {
               callAudio.available ? <CallAudioTimeline audio={callAudio} clock={clock} onSeek={seekTo} /> : undefined
             }
             onShare={onShare}
+            autoPlay={props.autoPlay}
             live={live}
             liveStartMs={liveStartMs}
             liveClockKnown={clockOffsetsOf(data.journey).length > 0}

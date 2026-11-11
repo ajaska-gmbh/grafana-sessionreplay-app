@@ -12,6 +12,15 @@ export const testIds = {
   replay: {
     container: 'data-testid replay-container',
   },
+  agents: {
+    container: 'data-testid agents-container',
+  },
+  agentDay: {
+    container: 'data-testid agent-day-container',
+    timeline: 'data-testid agent-day-timeline',
+    span: 'data-testid agent-day-span',
+    call: 'data-testid agent-day-call',
+  },
   player: {
     container: 'data-testid player-container',
     timeline: 'data-testid player-timeline',

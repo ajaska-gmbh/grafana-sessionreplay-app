@@ -1,7 +1,7 @@
 import { lastValueFrom } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
 import { appFilter, appLineFilter, eventLineFilter, sessionLineFilter, STREAMS } from './logql';
-import { createLokiFetcher } from './loki';
+import { createLokiFetcher, logqlString } from './loki';
 import { REPLAY_STARTED_EVENT, summariseSessions, type SessionSummary } from './sessions';
 import { sessionSearchQuery } from './sessionSearch';
 
@@ -141,4 +141,25 @@ export async function fetchMatchingSessionIds(
       .map((entry) => entry.labels.session_id)
       .filter(Boolean)
   );
+}
+
+/**
+ * One agent's sessions in the range: the markers of the app with the user's
+ * id on the line (`user_id` compared exactly once parsed).
+ */
+export async function fetchUserSessions(
+  lokiUid: string,
+  appName: string,
+  userId: string,
+  fromMs: number,
+  toMs: number
+): Promise<SessionSummary[]> {
+  const fetcher = createLokiFetcher(lokiUid);
+  const expr =
+    STREAMS.markers +
+    appFilter([appName]) +
+    eventLineFilter(REPLAY_STARTED_EVENT) +
+    ` |= ${logqlString(` user_id=${userId} `)}`;
+  const lines = await fetcher({ expr, fromMs, toMs, limit: 5000, direction: 'backward' });
+  return summariseSessions(lines).filter((session) => session.userId === userId && session.appName === appName);
 }

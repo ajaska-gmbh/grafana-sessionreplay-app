@@ -27,6 +27,20 @@ Grafana Cloud collector.
   5 seconds behind the user (polls Loki every 3 s, plays with a 3 s buffer); the
   badge shows the current lag, **Exit live** returns to the full recording. Links
   open live with `?live=1`.
+- **Agents** (`/a/ajaska-sessionreplay-app/agents?day=YYYY-MM-DD`): everyone with a
+  recorded session on a day (default today), per app and user, live ones first.
+  **Watch the day** opens the agent's day
+  (`/agents/<app_name>/<user_id>?day=&at=<epoch ms>&live=1&q=`): one timeline from the
+  first recording to the last, with the sessions, the calls (a searched lead's in
+  green) and where the agent was not in the app. One session plays at a time, as in
+  the replay viewer, and the day moves on to the next at its end; click anywhere on
+  the day to play from there. **Go live** follows the agent's current session with
+  sound. The day is read with one marker query, one small index query per session
+  (its own payload bucket, 4 at a time) and one query for the day's calls.
+- **Live with sound**: live mode plays the call audio about 15 s behind the agent
+  (a 10 s segment must have ended and reached the recorder's bucket); "Without
+  sound" follows ~5 s behind. Browsers hold sound back until the page was clicked:
+  live then shows **Turn on sound**.
 - **Session-only links**: `/a/ajaska-sessionreplay-app/session/<session_id>` looks up the app
   and opens the viewer. Use it from a Loki derived field (`session_id=(\w+)`), so every
   Faro log line in Explore links to its replay.
