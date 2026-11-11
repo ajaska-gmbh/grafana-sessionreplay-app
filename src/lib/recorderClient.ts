@@ -78,6 +78,22 @@ export async function listSessionAudio(
   return result;
 }
 
+/**
+ * `listed` added to `known`, by key: a live tail brings only the newest
+ * segments, and a full listing may have missed none of them. Unchanged
+ * tracks keep their arrays, so nothing re-syncs for nothing.
+ */
+export function mergeSegments(known: CallAudioSegments, listed: CallAudioSegments): CallAudioSegments {
+  const merged = noSegments();
+  for (const track of Object.keys(merged) as Array<keyof CallAudioSegments>) {
+    const keys = new Set(known[track].map((segment) => segment.key));
+    const added = listed[track].filter((segment) => !keys.has(segment.key));
+    merged[track] =
+      added.length === 0 ? known[track] : [...known[track], ...added].sort((a, b) => a.startMs - b.startMs);
+  }
+  return merged;
+}
+
 /** One segment's audio (Ogg Opus). */
 export async function fetchSegmentAudio(key: string): Promise<ArrayBuffer> {
   const response = await lastValueFrom(

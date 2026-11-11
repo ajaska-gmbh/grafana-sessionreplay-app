@@ -52,6 +52,15 @@ export function withDependencies(track: ReplayTrack, index: number): ReplayChunk
   return chain;
 }
 
+/** Keys of the chunks from the one at `offsetMs` to the newest, with what they depend on: what live from there needs. */
+export function chunksFrom(track: ReplayTrack, offsetMs: number): string[] {
+  const keys = new Set<string>();
+  for (let index = chunkIndexAt(track, offsetMs); index < track.chunks.length; index++) {
+    withDependencies(track, index).forEach((chunk) => keys.add(chunk.key));
+  }
+  return [...keys];
+}
+
 /** Whether the chunk at `index` can be played: it and what it depends on are loaded. */
 export function isReady(track: ReplayTrack, index: number): boolean {
   return track.chunks.length === 0 || withDependencies(track, index).every((chunk) => chunk.loaded);

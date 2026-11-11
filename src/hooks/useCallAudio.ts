@@ -5,6 +5,7 @@ import {
   clockOffsetsOf,
   connectionLost,
   listingRange,
+  LIST_CLOCK_SLACK_MS,
   type AudioSources,
   DEFAULT_AUDIBLE,
   missing,
@@ -13,10 +14,24 @@ import {
 } from '../lib/callAudio';
 import type { JourneyEvent } from '../lib/journey';
 import { type PlayerClock, useClockEffect } from '../lib/playerClock';
-import { fetchSegmentAudio, listSessionAudio, noSegments, type CallAudioSegments } from '../lib/recorderClient';
+import {
+  fetchSegmentAudio,
+  listSessionAudio,
+  mergeSegments,
+  noSegments,
+  type CallAudioSegments,
+} from '../lib/recorderClient';
 
-/** While live, the session's audio is listed again this often. */
-export const LIVE_RELIST_MS = 30_000;
+/**
+ * While live, the newest audio is listed this often (one small listing: the
+ * recorder lists only keys from the range's start on), so live with sound can
+ * trail the agent by little more than a segment (10 s) and its upload.
+ */
+export const LIVE_TAIL_MS = 3_000;
+/** How far back a live tail listing reaches: segments arrive after they end, and late after a network gap. */
+export const LIVE_TAIL_SPAN_MS = 3 * 60_000;
+/** While live, the whole session is listed again this often, for segments that arrived later than the tail reaches. */
+export const LIVE_RELIST_MS = 60_000;
 
 export interface CallAudio {
   /** Whether the session has call audio at all. */
@@ -79,9 +94,9 @@ export function useCallAudio(options: {
       return;
     }
     let cancelled = false;
+    const sessionSources: AudioSources = JSON.parse(sourcesKey);
     const load = () => {
       setLoading(true);
-      const sessionSources: AudioSources = JSON.parse(sourcesKey);
       // While live, the session goes on past the range loaded at the start.
       const span = listingRange(
         { startMs: fromMs, endMs: live ? Math.max(toMs, Date.now()) : toMs },
@@ -90,7 +105,8 @@ export function useCallAudio(options: {
       listSessionAudio(sessionSources, span.startMs, span.endMs)
         .then((listed) => {
           if (!cancelled) {
-            setSegments(listed);
+            // Live: keep what a tail brought meanwhile.
+            setSegments((known) => (live ? mergeSegments(listed, known) : listed));
             setError(undefined);
           }
         })
@@ -105,11 +121,31 @@ export function useCallAudio(options: {
           }
         });
     };
+    // Live: the newest minutes, often (server clock: the recorder files new segments on it).
+    let tailing = false;
+    const tail = () => {
+      if (tailing) {
+        return;
+      }
+      tailing = true;
+      const now = Date.now();
+      listSessionAudio(sessionSources, now - LIVE_TAIL_SPAN_MS, now + LIST_CLOCK_SLACK_MS)
+        .then((listed) => {
+          if (!cancelled) {
+            setSegments((known) => mergeSegments(known, listed));
+          }
+        })
+        // A failed tail is retried by the next one; the full listing reports errors.
+        .catch(() => undefined)
+        .finally(() => {
+          tailing = false;
+        });
+    };
     load();
-    const timer = live ? setInterval(load, LIVE_RELIST_MS) : undefined;
+    const timers = live ? [setInterval(load, LIVE_RELIST_MS), setInterval(tail, LIVE_TAIL_MS)] : [];
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      timers.forEach(clearInterval);
     };
   }, [available, sourcesKey, offsetsKey, fromMs, toMs, live]);
 
