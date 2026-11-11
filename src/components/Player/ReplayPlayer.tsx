@@ -79,8 +79,6 @@ export interface ReplayPlayerProps {
    * plays every appended event LIVE_BUFFER_MS behind the newest one.
    */
   live?: boolean;
-  /** Live: Loki receive time (epoch ms) of the newest event, to estimate the real lag. */
-  liveReceivedAtMs?: number;
   /**
    * Live: rrweb time (the recording computer's clock) to start playing at, held
    * this far behind the user for good (call audio arrives ~15 s late). Without
@@ -135,7 +133,6 @@ export function ReplayPlayer({
   onTarget,
   autoPlay = false,
   live = false,
-  liveReceivedAtMs,
   liveStartMs,
   onExitLive,
 }: ReplayPlayerProps) {
@@ -203,15 +200,11 @@ export function ReplayPlayer({
   const [skipping, setSkipping] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [page, setPage] = useState<PageInfo>({});
-  /** Live: how far playback trails the newest received event (ms). */
+  /** Live: how far playback trails the user (ms). */
   const [liveLagMs, setLiveLagMs] = useState(0);
   const newestEventRef = useRef(0);
   /** Live: rrweb time of the snapshot live playback started from. */
   const liveBaselineRef = useRef(Infinity);
-  const receivedAtRef = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    receivedAtRef.current = liveReceivedAtMs;
-  }, [liveReceivedAtMs]);
 
   /** Live plays one flat list, from the newest snapshot on. */
   const liveEvents = useMemo(() => (live ? track.chunks.flatMap((chunk) => chunk.events) : []), [live, track]);
@@ -274,10 +267,9 @@ export function ReplayPlayer({
         startTimeMs: meta.startTime,
         playing: playingRef.current && current >= 0,
       });
-      // Playback trails the newest event (buffer), which itself arrived some time ago.
-      const behindNewest = Math.max(0, newestEventRef.current - (meta.startTime + replayer.getCurrentTime()));
-      const sinceReceived = receivedAtRef.current !== undefined ? Math.max(0, Date.now() - receivedAtRef.current) : 0;
-      const lag = behindNewest + sinceReceived;
+      // How far playback is behind the user now: the user's computer's time
+      // (ours minus the measured offset) minus the playhead's.
+      const lag = Math.max(0, Date.now() - clock.get().clockOffsetMs - (meta.startTime + current));
       setLiveLagMs((previous) => (Math.round(previous / 1000) === Math.round(lag / 1000) ? previous : lag));
       const url = pageAt(trackRef.current.pages, meta.startTime + current);
       const title = replayer.iframe.contentDocument?.title || undefined;

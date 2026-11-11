@@ -121,6 +121,23 @@ export class CallAudioEngine {
     }
   }
 
+  /**
+   * Whether the browser holds the audio back: a page that played without a
+   * click (live, from a link) gets a suspended context until the user acts.
+   */
+  isBlocked(): boolean {
+    return !this.disposed && this.context?.state === 'suspended';
+  }
+
+  /** Start the audio from a user gesture (a click): browsers allow it then. */
+  async unlock(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    await this.ensureContext().resume();
+    this.resync();
+  }
+
   dispose(): void {
     this.disposed = true;
     for (const name of CALL_AUDIO_TRACKS) {

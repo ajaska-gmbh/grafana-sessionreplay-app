@@ -49,6 +49,10 @@ export interface CallAudio {
   setVolume: (volume: number) => void;
   stereo: boolean;
   setStereo: (stereo: boolean) => void;
+  /** The browser holds the audio back until the user clicks (playback started without one, e.g. live). */
+  blocked: boolean;
+  /** Call from a click: lets the browser play the audio. */
+  unlock: () => void;
 }
 
 /**
@@ -153,9 +157,16 @@ export function useCallAudio(options: {
   useEffect(() => engineRef.current?.setAudible(audible), [audible]);
   useEffect(() => engineRef.current?.setVolume(volume), [volume]);
   useEffect(() => engineRef.current?.setStereo(stereo), [stereo]);
+  const [blocked, setBlocked] = useState(false);
+  const blockedRef = useRef(false);
   useClockEffect(clock, (state) => {
     if (available) {
       engineRef.current?.sync(state);
+      const nowBlocked = state.playing && Boolean(engineRef.current?.isBlocked());
+      if (nowBlocked !== blockedRef.current) {
+        blockedRef.current = nowBlocked;
+        setBlocked(nowBlocked);
+      }
     }
   });
 
@@ -173,6 +184,13 @@ export function useCallAudio(options: {
     micMissing,
     connectionLost: offline,
     audible,
+    blocked,
+    unlock: () => {
+      void engineRef.current?.unlock().then(() => {
+        blockedRef.current = Boolean(engineRef.current?.isBlocked());
+        setBlocked(blockedRef.current);
+      });
+    },
     toggle: (track) =>
       setAudible((previous) => {
         const next = new Set(previous);

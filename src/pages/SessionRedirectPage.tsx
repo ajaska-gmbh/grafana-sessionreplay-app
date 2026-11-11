@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { PluginPage } from '@grafana/runtime';
 import { Alert, LoadingPlaceholder } from '@grafana/ui';
-import { Navigate, useParams } from 'react-router-dom';
+import { Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { useSettings } from '../hooks/useSettings';
 import { replayUrl } from '../lib/format';
 import { fetchSessions } from '../lib/sessionQueries';
@@ -16,6 +16,10 @@ const LOOKBACKS_MS = [24 * 3600_000, 14 * 24 * 3600_000];
  */
 function SessionRedirectPage() {
   const { sessionId = '' } = useParams();
+  // Live and a search carry over (`?live=1`, `?q=`).
+  const [params] = useSearchParams();
+  const live = params.get('live') === '1';
+  const q = params.get('q') ?? undefined;
   const { lokiUid } = useSettings();
   const [target, setTarget] = useState<string | null>();
 
@@ -27,7 +31,7 @@ function SessionRedirectPage() {
         const { sessions } = await fetchSessions(lokiUid, [], now - lookback, now, 1000, sessionId);
         const session = sessions.find((candidate) => candidate.sessionId === sessionId);
         if (session) {
-          return replayUrl(session.appName, sessionId, sessionRange(session, now));
+          return replayUrl(session.appName, sessionId, { ...sessionRange(session, now), live, q });
         }
       }
       return null;
@@ -41,7 +45,7 @@ function SessionRedirectPage() {
     return () => {
       cancelled = true;
     };
-  }, [lokiUid, sessionId]);
+  }, [lokiUid, sessionId, live, q]);
 
   if (target) {
     return <Navigate to={target} replace />;
