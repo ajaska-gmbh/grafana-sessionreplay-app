@@ -154,7 +154,7 @@ function AgentDayPage() {
   // (play() clears it) and after it was playing.
   const wasPlaying = useRef(false);
   /** The playback already moved on from (session and nonce): a late frame of it must not move on twice. */
-  const advancedFrom = useRef<string>();
+  const advancedFrom = useRef<string | undefined>(undefined);
   useClockEffect(clock, (state) => {
     if (!current || current.live || state.startTimeMs === undefined) {
       wasPlaying.current = false;
