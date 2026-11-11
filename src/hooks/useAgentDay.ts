@@ -111,8 +111,13 @@ export function useAgentDay(params: {
       };
     };
 
-    const run = () =>
-      load()
+    let running = false;
+    const run = () => {
+      if (running) {
+        return;
+      }
+      running = true;
+      return load()
         .then((next) => {
           if (!cancelled) {
             setState({ ...next, key });
@@ -123,7 +128,11 @@ export function useAgentDay(params: {
             const message = (error as { data?: { message?: string } })?.data?.message ?? String(error);
             setState((previous) => ({ ...previous, loading: false, error: message, key }));
           }
+        })
+        .finally(() => {
+          running = false;
         });
+    };
 
     void run();
     const timer = day.endMs > Date.now() ? setInterval(run, TODAY_REFRESH_MS) : undefined;

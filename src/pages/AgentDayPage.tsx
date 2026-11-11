@@ -35,6 +35,8 @@ function useMinute(): number {
 interface Playing {
   span: DaySpan;
   atMs: number;
+  /** The session's Loki range, fixed when it starts playing: a changing range reloads the session. */
+  range: { from: number; to: number };
   autoPlay: boolean;
   live: boolean;
   /** A new value remounts the player (a seek on the day's timeline). */
@@ -57,8 +59,16 @@ function AgentDayPage() {
   const data = useAgentDay({ lokiUid, appName, userId, day, payloadBuckets });
   const [clock] = useState(() => new PlayerClock());
   const now = useMinute();
-  const [playing, setPlaying] = useState<Playing>();
   const nonce = useRef(0);
+
+  // What plays belongs to one agent and day: another one starts afresh
+  // (React's "adjust state when an input changes").
+  const scope = `${appName}/${userId}/${day.key}`;
+  const [playingState, setPlayingState] = useState<{ scope: string; playing?: Playing }>({ scope });
+  if (playingState.scope !== scope) {
+    setPlayingState({ scope });
+  }
+  const playing = playingState.scope === scope ? playingState.playing : undefined;
 
   const extent = useMemo(() => dayExtent(data.spans, day), [data.spans, day]);
   const newest = data.spans.length > 0 ? data.spans[data.spans.length - 1] : undefined;
@@ -68,24 +78,26 @@ function AgentDayPage() {
     .find((span) => data.active.has(span.session.sessionId));
   const agent = newest?.session;
 
-  const go = useCallback(
-    (atMs: number, options: { autoPlay?: boolean; live?: boolean } = {}) => {
-      const target = options.live && liveSession ? { span: liveSession, atMs } : playAt(data.spans, atMs);
-      if (!target) {
-        return;
-      }
-      setPlaying({
-        span: target.span,
-        atMs: target.atMs,
-        autoPlay: options.autoPlay ?? true,
-        live: Boolean(options.live),
-        nonce: ++nonce.current,
+  /** Play `span` from `atMs`. The shared clock is cleared, so nothing reads the previous session's time. */
+  const play = useCallback(
+    (span: DaySpan, atMs: number, options: { autoPlay?: boolean; live?: boolean } = {}) => {
+      clock.update({ startTimeMs: undefined, offsetMs: 0, totalMs: 0, playing: false });
+      setPlayingState({
+        scope,
+        playing: {
+          span,
+          atMs,
+          range: sessionRange(span.session, Date.now()),
+          autoPlay: options.autoPlay ?? true,
+          live: Boolean(options.live),
+          nonce: ++nonce.current,
+        },
       });
       setParams(
         (previous) => {
           const next = new URLSearchParams(previous);
           next.delete('live');
-          next.set('at', String(Math.round(target.atMs)));
+          next.set('at', String(Math.round(atMs)));
           if (options.live) {
             next.set('live', '1');
           }
@@ -94,46 +106,73 @@ function AgentDayPage() {
         { replace: true }
       );
     },
-    [data.spans, liveSession, setParams]
+    [clock, scope, setParams]
+  );
+  /** Play from a time of the day: the session there, or the next one after a gap. */
+  const go = useCallback(
+    (atMs: number) => {
+      const target = playAt(data.spans, atMs);
+      if (target) {
+        play(target.span, target.atMs);
+      }
+    },
+    [data.spans, play]
   );
 
-  // Where the day starts: the link's time, live, the searched lead's first call, or the day's start.
+  // Where the day starts, once there is something to play: the link's time,
+  // live, the searched lead's first call, or the day's start. Later refreshes
+  // of the day (today) do not move it.
+  const hasSpans = data.spans.length > 0;
   const initial = useMemo((): Playing | undefined => {
-    if (data.loading || data.spans.length === 0) {
+    if (!hasSpans) {
       return undefined;
     }
-    const live = params.get('live') === '1' && liveSession !== undefined;
-    if (live) {
-      return { span: liveSession!, atMs: liveSession!.endMs, autoPlay: true, live: true, nonce: 0 };
+    const range = (span: DaySpan) => sessionRange(span.session, now);
+    if (params.get('live') === '1' && liveSession) {
+      return {
+        span: liveSession,
+        atMs: liveSession.endMs,
+        range: range(liveSession),
+        autoPlay: true,
+        live: true,
+        nonce: 0,
+      };
     }
     const at = Number(params.get('at'));
     const matched = highlight
       ? data.calls.find((call) => call.leadId === highlight || call.crmLeadId === highlight)
       : undefined;
     const target = playAt(data.spans, Number.isFinite(at) && at > 0 ? at : (matched?.atMs ?? data.spans[0].startMs));
-    return target ? { ...target, autoPlay: false, live: false, nonce: 0 } : undefined;
-    // Only the first load decides; later refreshes (today) must not move playback.
+    return target ? { ...target, range: range(target.span), autoPlay: false, live: false, nonce: 0 } : undefined;
+    // Decided once per agent and day, when the first spans arrive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.loading]);
+  }, [hasSpans, scope]);
   const current = playing ?? initial;
 
-  // At the end of a session, on to the next one (or the session still running then).
+  // At the end of a session (its last tab, or the span), on to the next one,
+  // or the session still running then. Only once the clock is this session's
+  // (play() clears it) and after it was playing.
+  const wasPlaying = useRef(false);
   useClockEffect(clock, (state) => {
-    if (!current || current.live || !state.playing || state.startTimeMs === undefined) {
+    if (!current || current.live || state.startTimeMs === undefined) {
+      wasPlaying.current = false;
       return;
     }
     const wallMs = state.startTimeMs + state.offsetMs;
-    const span = current.span;
-    if (wallMs >= span.startMs && wallMs >= span.endMs - END_MARGIN_MS) {
-      const next = after(data.spans, span);
+    const ended =
+      (state.playing && wallMs >= current.span.endMs - END_MARGIN_MS) ||
+      (wasPlaying.current && !state.playing && state.totalMs > 0 && state.offsetMs >= state.totalMs - END_MARGIN_MS);
+    wasPlaying.current = state.playing;
+    if (ended && wallMs >= current.span.startMs) {
+      const next = after(data.spans, current.span);
       if (next) {
-        setPlaying({ span: next.span, atMs: next.atMs, autoPlay: true, live: false, nonce: ++nonce.current });
+        wasPlaying.current = false;
+        play(next.span, next.atMs);
       }
     }
   });
 
   const name = agent?.userName || agent?.userEmail || `User ${userId}`;
-  const range = current ? sessionRange(current.span.session, now) : undefined;
 
   return (
     <PluginPage
@@ -149,7 +188,6 @@ function AgentDayPage() {
           <DayPicker
             day={day}
             onChange={(next) => {
-              setPlaying(undefined);
               setParams(new URLSearchParams(next.key === dayOf(undefined).key ? {} : { day: next.key }));
             }}
           />
@@ -158,7 +196,7 @@ function AgentDayPage() {
               size="sm"
               variant="destructive"
               icon="circle-mono"
-              onClick={() => go(liveSession.endMs, { live: true })}
+              onClick={() => play(liveSession, liveSession.endMs, { live: true })}
               disabled={current?.live}
             >
               {current?.live ? 'Following live' : 'Go live'}
@@ -197,18 +235,19 @@ function AgentDayPage() {
               highlight={highlight}
               onSeek={(atMs) => go(atMs)}
             />
-            {current && range && (
+            {current && (
               <div className={styles.player}>
                 <SessionReplay
                   key={`${current.span.session.sessionId}|${current.nonce}|${current.live ? 'live' : 'replay'}`}
                   appName={appName}
                   sessionId={current.span.session.sessionId}
-                  from={range.from}
-                  to={range.to}
+                  from={current.range.from}
+                  to={current.range.to}
                   atMs={current.live ? undefined : current.atMs}
                   autoPlay={current.autoPlay}
                   live={current.live}
                   clock={clock}
+                  onExitLive={() => play(current.span, current.span.endMs, { autoPlay: false })}
                   highlight={highlight}
                   searchFields={searchFields}
                   recorder={recorder}
@@ -227,9 +266,9 @@ function AgentDayPage() {
                   <Stack key={span.session.sessionId} gap={1} alignItems="center">
                     <Button
                       size="sm"
-                      variant={span === current?.span ? 'primary' : 'secondary'}
+                      variant={span.session.sessionId === current?.span.session.sessionId ? 'primary' : 'secondary'}
                       fill="text"
-                      onClick={() => go(span.startMs)}
+                      onClick={() => play(span, span.startMs)}
                     >
                       {dateTimeFormat(span.startMs + data.clockOffsetMs, { format: 'HH:mm' })} –{' '}
                       {dateTimeFormat(span.endMs + data.clockOffsetMs, { format: 'HH:mm' })}

@@ -35,6 +35,8 @@ export interface SessionReplayProps {
   autoPlay?: boolean;
   /** The player's time, for a page that follows it (the agent's day); one of its own when not given. */
   clock?: PlayerClock;
+  /** Live was left from the player (Exit live). */
+  onExitLive?: () => void;
   lokiUid: string;
   tempoUid: string;
   /** Whether the call recorder is configured (app config): then the session's call audio is played with it. */
@@ -312,7 +314,10 @@ export function SessionReplay(props: SessionReplayProps) {
             liveStartMs={liveStartMs}
             liveClockKnown={clockOffsetsOf(data.journey).length > 0}
             liveReceivedAtMs={data.lastReplayMs}
-            onExitLive={() => setLive(false)}
+            onExitLive={() => {
+              setLive(false);
+              props.onExitLive?.();
+            }}
           />
         ) : noRecording ? (
           <Alert severity="info" title="Nothing to replay">

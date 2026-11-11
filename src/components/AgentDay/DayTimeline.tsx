@@ -21,8 +21,6 @@ interface Props {
   onSeek: (atMs: number) => void;
 }
 
-const HOUR = 3600_000;
-
 /** The agent's whole day on one axis; click anywhere to play from there. */
 export function DayTimeline({
   spans,
@@ -50,10 +48,16 @@ export function DayTimeline({
 
   const gaps = useMemo(() => dayGaps(spans, extent), [spans, extent]);
   const hours = useMemo(() => {
+    // Whole hours of local time (any zone offset, DST), on the server's clock.
     const ticks: number[] = [];
-    const first = Math.ceil((extent.startMs + clockOffsetMs) / HOUR) * HOUR - clockOffsetMs;
-    for (let at = first; at < extent.endMs; at += HOUR) {
-      ticks.push(at);
+    const hour = new Date(extent.startMs + clockOffsetMs);
+    hour.setMinutes(0, 0, 0);
+    for (
+      hour.setHours(hour.getHours() + 1);
+      hour.getTime() - clockOffsetMs < extent.endMs;
+      hour.setHours(hour.getHours() + 1)
+    ) {
+      ticks.push(hour.getTime() - clockOffsetMs);
     }
     return ticks;
   }, [extent, clockOffsetMs]);

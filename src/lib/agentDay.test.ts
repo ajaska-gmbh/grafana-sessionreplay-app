@@ -60,6 +60,9 @@ describe("an agent's day", () => {
     expect(after(spans, morning)).toEqual({ span: lunch, atMs: T + 90 * MIN });
     expect(after(spans, lunch)).toEqual({ span: second, atMs: T + 120 * MIN });
     expect(after(spans, second)).toBeUndefined();
+    // A refresh rebuilds the spans: the same session (by id) is never "the next" one.
+    const refreshed = { ...second, endMs: second.endMs + MIN };
+    expect(after([morning, lunch, refreshed], second)).toBeUndefined();
   });
 
   it('marks where the agent was not in the app', () => {

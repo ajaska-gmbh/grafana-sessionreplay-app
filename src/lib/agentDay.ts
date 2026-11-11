@@ -72,7 +72,8 @@ export function playAt(spans: DaySpan[], atMs: number): { span: DaySpan; atMs: n
 
 /** What follows `span` once it ended: another span still running then, or the next to start. */
 export function after(spans: DaySpan[], span: DaySpan): { span: DaySpan; atMs: number } | undefined {
-  const others = spans.filter((candidate) => candidate !== span);
+  // By id: a refresh of the day builds new span objects for the same sessions.
+  const others = spans.filter((candidate) => candidate.session.sessionId !== span.session.sessionId);
   const running = others.find((candidate) => candidate.startMs <= span.endMs && span.endMs < candidate.endMs);
   if (running) {
     return { span: running, atMs: span.endMs };
