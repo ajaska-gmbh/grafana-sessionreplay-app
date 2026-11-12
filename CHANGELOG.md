@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- Call audio in later sessions of a page: Faro starts a new session after 4 h (or 15 min without signals) while the dialer keeps recording; such a session now finds the recording it continues (the agent's latest recording started before it), so afternoons play with sound again, in replays and live, also for sessions recorded before the dialer repeats the announcement (#24).
+
 ## 0.8.0
 
 - Agents: everyone with a recorded session on a day, live first; an agent's whole day on one timeline (sessions, calls, time away from the app), played session after session, with Go live (sound). Links name the day and an absolute time (#23).
