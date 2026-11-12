@@ -14,6 +14,7 @@ import { clockOffsetsOf } from '../../lib/callAudio';
 import { UserJourney } from '../Journey/UserJourney';
 import { CallAudioTimeline } from '../Player/CallAudioTimeline';
 import { useCallAudio } from '../../hooks/useCallAudio';
+import { useInheritedRecording } from '../../hooks/useInheritedRecording';
 import type { PayloadBuckets } from '../../lib/sessionBucket';
 import { ReplayPlayer, type SeekRequest, type TimelineMarker } from '../Player/ReplayPlayer';
 import { testIds } from '../testIds';
@@ -154,20 +155,29 @@ export function SessionReplay(props: SessionReplayProps) {
       }));
   }, [data.journey, recordingStartMs]);
 
+  // The recording the session continues, when it has no recording.started of its own (a later Faro session of the page).
+  const recording = useInheritedRecording({
+    lokiUid,
+    sessionId,
+    journey: data.journey,
+    loadingJourney: data.loadingJourney,
+    range: data.range,
+    enabled: Boolean(props.recorder),
+  });
   // Times of day are shown on the server's clock: the last offset the agent's computer measured.
-  const clockOffsetMs = useMemo(() => clockOffsetsOf(data.journey).at(-1) ?? 0, [data.journey]);
+  const clockOffsetMs = useMemo(() => clockOffsetsOf(recording.journey).at(-1) ?? 0, [recording.journey]);
   useEffect(() => clock.update({ clockOffsetMs }), [clock, clockOffsetMs]);
 
   const { highlight, searchFields } = props;
   const callAudio = useCallAudio({
-    journey: data.journey,
+    journey: recording.journey,
     range: data.range,
     clock,
     enabled: Boolean(props.recorder),
     live,
   });
   // Live starts once the journey says whether there is call audio, so it starts once, in the right mode.
-  const liveReady = !live || !props.recorder || !data.loadingJourney;
+  const liveReady = !live || !props.recorder || !recording.resolving;
   const withSound = liveReady && live && liveSound && callAudio.available;
   // Fixed when live with sound starts (React's "adjust state when an input changes"):
   // the agent's computer's "now" this far back, as rrweb times are on its clock.
@@ -312,7 +322,7 @@ export function SessionReplay(props: SessionReplayProps) {
             autoPlay={props.autoPlay}
             live={live}
             liveStartMs={liveStartMs}
-            liveClockKnown={clockOffsetsOf(data.journey).length > 0}
+            liveClockKnown={clockOffsetsOf(recording.journey).length > 0}
             liveReceivedAtMs={data.lastReplayMs}
             onExitLive={() => {
               setLive(false);
