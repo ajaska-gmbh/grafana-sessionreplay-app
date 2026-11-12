@@ -13,6 +13,8 @@ import { createLokiFetcher, type LokiFetcher } from '../lib/loki';
 export const INHERIT_LIMIT = 5000;
 /** Past the session's start (Loki time): the previous session's last lines may be indexed a little later. */
 export const INHERIT_QUERY_AFTER_MS = 3600_000;
+/** Live waits for the lookup: past this it starts without the inherited recording (as before). */
+export const INHERIT_TIMEOUT_MS = 10_000;
 
 /**
  * The journey as the call audio reads it: with the recording.started (and
@@ -49,6 +51,7 @@ export function useInheritedRecording(options: {
     }
     let cancelled = false;
     const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), INHERIT_TIMEOUT_MS);
     (fetcher ?? createLokiFetcher(lokiUid))({
       expr: inheritedRecordingQuery(facts.appName!, facts.userId!),
       fromMs: fromMs - INHERIT_LOOKBACK_MS,
@@ -61,12 +64,14 @@ export function useInheritedRecording(options: {
       // Optional: without it the session plays without sound, as before.
       .catch(() => [])
       .then((events) => {
+        clearTimeout(timeout);
         if (!cancelled) {
           setResult({ key, events, done: true });
         }
       });
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
       abort.abort();
     };
   }, [wanted, facts, fromMs, key, lokiUid, fetcher]);

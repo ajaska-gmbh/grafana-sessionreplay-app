@@ -3,7 +3,7 @@ import { audioSourcesOf } from '../lib/callAudio';
 import type { JourneyEvent } from '../lib/journey';
 import type { LokiFetcher } from '../lib/loki';
 import { INHERIT_LOOKBACK_MS } from '../lib/inheritedRecording';
-import { useInheritedRecording } from './useInheritedRecording';
+import { INHERIT_TIMEOUT_MS, useInheritedRecording } from './useInheritedRecording';
 
 jest.mock('../lib/loki', () => ({ ...jest.requireActual('../lib/loki'), createLokiFetcher: jest.fn() }));
 
@@ -90,6 +90,27 @@ describe('useInheritedRecording', () => {
 
     await waitFor(() => expect(result.current.resolving).toBe(false));
     expect(audioSourcesOf(result.current.journey)).toEqual({ browser: undefined });
+  });
+
+  it('gives up waiting after INHERIT_TIMEOUT_MS, so live starts anyway', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetcher = jest.fn<ReturnType<LokiFetcher>, Parameters<LokiFetcher>>(
+        ({ signal }) =>
+          new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+      );
+      const { result, rerender } = setup(fetcher);
+      rerender({ journey: [event('session_extend', T)], loadingJourney: false });
+      expect(result.current.resolving).toBe(true);
+
+      await act(async () => {
+        jest.advanceTimersByTime(INHERIT_TIMEOUT_MS);
+      });
+
+      expect(result.current.resolving).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('asks nothing when the recorder is not configured', () => {

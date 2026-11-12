@@ -322,7 +322,7 @@ export function SessionReplay(props: SessionReplayProps) {
             autoPlay={props.autoPlay}
             live={live}
             liveStartMs={liveStartMs}
-            liveClockKnown={clockOffsetsOf(data.journey).length > 0}
+            liveClockKnown={clockOffsetsOf(recording.journey).length > 0}
             liveReceivedAtMs={data.lastReplayMs}
             onExitLive={() => {
               setLive(false);
