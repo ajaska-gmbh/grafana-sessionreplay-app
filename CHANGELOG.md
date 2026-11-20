@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+
+- Pinch zooms on phones: the replay keeps the page at its real layout width instead of reflowing it to the zoomed size (cut-off cards on mobile checkouts). Pages that record their zoom (`viewport_zoom` Faro events, LP Shop storefront) show the visitor's zoom and visible area on top, smoothly and live as well, with a "Visitor's zoom" toggle. Also repairs six `package-lock.json` entries the 0.3.0 release bump had corrupted, which broke `npm ci` (#26).
+
 ## 0.8.1
 
 - Call audio in later sessions of a page: Faro starts a new session after 4 h (or 15 min without signals) while the dialer keeps recording; such a session now finds the recording it continues (the agent's latest recording started before it), so afternoons play with sound again, in replays and live, also for sessions recorded before the dialer repeats the announcement (#24).
