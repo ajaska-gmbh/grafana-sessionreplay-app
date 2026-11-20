@@ -82,7 +82,9 @@ jest.mock('@grafana/rrweb', () => ({
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { chunksOf, indexFromLines, linesOf, SESSION_ID } from '../../lib/fixtures';
+import { PlayerClock } from '../../lib/playerClock';
 import { decodeReplayLines, ReplayTimeline } from '../../lib/replayEvents';
+import type { ZoomSample } from '../../lib/viewportZoom';
 import { testIds } from '../testIds';
 import { FOCUS_DEBOUNCE_MS, ReplayPlayer } from './ReplayPlayer';
 
@@ -331,6 +333,59 @@ describe('ReplayPlayer, edge cases', () => {
     expect(replayer.sized.iframe).toEqual({});
   });
 
+  it("shows the visitor's zoom over the page at its layout width, and turns it off on request", () => {
+    jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(640);
+    jest.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(1164);
+    const zoomed = (timeMs: number, scale: number, offsetLeft: number, offsetTop: number): ZoomSample => ({
+      timeMs,
+      scale,
+      offsetLeft,
+      offsetTop,
+      width: 320 / scale,
+      height: 582 / scale,
+      layoutWidth: 320,
+      layoutHeight: 582,
+    });
+    const zoom = [zoomed(MIN, 2, 100, 200), zoomed(MIN + 1000, 1, 0, 0)];
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    const clock = new PlayerClock();
+    render(<ReplayPlayer track={replay.tracks[0]} clock={clock} zoom={zoom} />);
+    const [replayer] = MockReplayer.instances;
+    const style = replayer.wrapper.style;
+
+    act(() => replayer.emit('resize', { width: 320, height: 582 }));
+    expect(style.transform).toBe('scale(1)');
+    expect(style.clipPath).toBe('');
+
+    // Pinched to 2x: rrweb resizes to the visible 160 px; the page stays 320 px wide, the visible area fills the stage.
+    act(() => clock.update({ startTimeMs: 0, offsetMs: MIN }));
+    act(() => replayer.emit('resize', { width: 160, height: 291 }));
+    expect(replayer.sized.iframe).toEqual({ width: '320', height: '582' });
+    expect(style.transform).toBe('scale(2) translate(-100px, -200px)');
+    expect(style.clipPath).toBe('inset(200px 60px 91px 100px)');
+    // Halfway back to 1x.
+    act(() => clock.update({ offsetMs: MIN + 500 }));
+    expect(style.transform).toBe('scale(1.5) translate(-50px, -100px)');
+
+    fireEvent.click(screen.getByTestId(testIds.player.zoom));
+    expect(style.transform).toBe('scale(1)');
+    expect(style.clipPath).toBe('');
+    fireEvent.click(screen.getByTestId(testIds.player.zoom));
+    expect(style.transform).toBe('scale(1.5) translate(-50px, -100px)');
+
+    act(() => clock.update({ offsetMs: MIN + 1000 }));
+    expect(style.transform).toBe('scale(1)');
+    jest.restoreAllMocks();
+  });
+
+  it('offers the zoom only for recordings with zoom data', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} />);
+    expect(screen.queryByTestId(testIds.player.zoom)).not.toBeInTheDocument();
+  });
+
   it('says nothing was recorded where the start chunk is loaded but empty and nothing follows', () => {
     const replay = new ReplayTimeline(indexFromLines(lines));
     ['rec1:4', 'rec1:5'].forEach((key) => replay.addChunk(key, []));
@@ -387,5 +442,20 @@ describe('ReplayPlayer, live', () => {
     rerender(<ReplayPlayer track={replay.tracks[0]} live />);
 
     expect(replayer.added.map((event) => event.timestamp / MIN)).toEqual([25, 25 + 1 / MIN, 29, 29 + 5000 / MIN]);
+  });
+
+  it("follows the visitor's zoom live too", () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:5', all.get('rec1:5')!);
+    const clock = new PlayerClock();
+    const zoom: ZoomSample[] = [
+      { timeMs: 25 * MIN, scale: 2, offsetLeft: 0, offsetTop: 0, width: 1, height: 1, layoutWidth: 2, layoutHeight: 2 },
+    ];
+    render(<ReplayPlayer track={replay.tracks[0]} live clock={clock} zoom={zoom} />);
+    const [replayer] = MockReplayer.instances;
+    act(() => replayer.emit('resize', { width: 2, height: 2 }));
+    act(() => clock.update({ startTimeMs: 25 * MIN, offsetMs: 10 }));
+    expect(replayer.wrapper.style.transform).toMatch(/^scale\([\d.e-]+\) translate\(0px, 0px\)$/);
+    expect(screen.getByTestId(testIds.player.zoom)).toBeInTheDocument();
   });
 });

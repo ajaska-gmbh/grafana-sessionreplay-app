@@ -30,7 +30,8 @@ import {
   TrackFeed,
   unloadedSpans,
 } from '../../lib/replayFeed';
-import { PlayerClock, useClockEffect, useClockValue } from '../../lib/playerClock';
+import { PlayerClock, useClockEffect, useClockValue, type ClockState } from '../../lib/playerClock';
+import { wrapperStyle, zoomAt, type Zoom, type ZoomSample } from '../../lib/viewportZoom';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
 
@@ -91,6 +92,12 @@ export interface ReplayPlayerProps {
    */
   liveStartMs?: number;
   onExitLive?: () => void;
+  /**
+   * The visitor's pinch zooms (Faro viewport_zoom events), sorted: shown as a
+   * zoom on the page. Without them pinch zooms replay unzoomed at the layout
+   * width (LayoutViewport).
+   */
+  zoom?: readonly ZoomSample[];
 }
 
 interface PageInfo {
@@ -112,6 +119,8 @@ const LIVE_WAITING_TEXT = {
   ...WAITING_TEXT,
   failed: 'The newest part of the recording could not be loaded yet; retrying…',
 };
+
+const NO_ZOOM: readonly ZoomSample[] = [];
 
 /** A timeline drag asks the loader for its target once the thumb rested this long. */
 export const FOCUS_DEBOUNCE_MS = 250;
@@ -142,6 +151,7 @@ export function ReplayPlayer({
   liveClockKnown = false,
   liveReceivedAtMs,
   onExitLive,
+  zoom = NO_ZOOM,
 }: ReplayPlayerProps) {
   const styles = useStyles2(getStyles);
   const theme = useTheme2();
@@ -151,6 +161,10 @@ export function ReplayPlayer({
   const replayerRef = useRef<Replayer | null>(null);
   const addedRef = useRef<WeakSet<eventWithTime>>(new WeakSet());
   const viewportRef = useRef<{ width: number; height: number } | null>(null);
+  /** The visitor's zoom at the playhead, shown over the page. */
+  const zoomRef = useRef<Zoom | undefined>(undefined);
+  const zoomSamplesRef = useRef(zoom);
+  const [showZoom, setShowZoom] = useState(true);
   const frameRef = useRef<number | null>(null);
   const rangeRef = useRef<HTMLInputElement>(null);
   const [ownClock] = useState(() => new PlayerClock());
@@ -253,7 +267,9 @@ export function ReplayPlayer({
       return;
     }
     const scale = Math.min(stage.clientWidth / viewport.width, stage.clientHeight / viewport.height, 1);
-    replayer.wrapper.style.transform = `scale(${scale})`;
+    const { transform, clipPath } = wrapperStyle(scale, viewport, zoomRef.current);
+    replayer.wrapper.style.transform = transform;
+    replayer.wrapper.style.clipPath = clipPath;
     replayer.wrapper.style.transformOrigin = 'top left';
     replayer.wrapper.style.position = 'absolute';
     replayer.wrapper.style.left = `${Math.max(0, (stage.clientWidth - viewport.width * scale) / 2)}px`;
@@ -303,6 +319,29 @@ export function ReplayPlayer({
     const title = replayer?.iframe.contentDocument?.title || undefined;
     setPage((previous) => (previous.url === url && previous.title === title ? previous : { url, title }));
   }, [live, clock]);
+
+  /** Shows the visitor's zoom at the playhead (each frame while playing). */
+  const applyZoom = useCallback(
+    (state: ClockState) => {
+      const samples = zoomSamplesRef.current;
+      const next =
+        showZoom && samples.length > 0 && state.startTimeMs !== undefined
+          ? zoomAt(samples, state.startTimeMs + state.offsetMs)
+          : undefined;
+      const previous = zoomRef.current;
+      if (next === previous || (next && previous && sameZoom(next, previous))) {
+        return;
+      }
+      zoomRef.current = next;
+      rescale();
+    },
+    [showZoom, rescale]
+  );
+  useClockEffect(clock, applyZoom);
+  useEffect(() => {
+    zoomSamplesRef.current = zoom;
+    applyZoom(clock.get());
+  }, [zoom, applyZoom, clock]);
 
   // The timeline's thumb follows every frame without re-rendering the player.
   useClockEffect(clock, (state) => {
@@ -388,7 +427,9 @@ export function ReplayPlayer({
       // Pinch zooms are recorded as resizes to the zoomed size: replay them at
       // the layout viewport (see LayoutViewport). rrweb's own handler has sized
       // the iframe already; this one runs after it.
-      const layoutViewport = new LayoutViewport(() => chunksHaveTouchInput(trackRef.current.chunks));
+      const layoutViewport = new LayoutViewport(
+        () => zoomSamplesRef.current.length > 0 || chunksHaveTouchInput(trackRef.current.chunks)
+      );
       replayer.on('resize', (dimension) => {
         const recorded = dimension as Viewport;
         const shown = layoutViewport.next(recorded);
@@ -731,6 +772,17 @@ export function ReplayPlayer({
             {liveLagMs < 60_000 ? `~${Math.round(liveLagMs / 1000)} s behind` : `~${formatClock(liveLagMs)} behind`}
           </span>
           <div className={styles.spacer} />
+          {zoom.length > 0 && (
+            <ToolbarButton
+              icon="search-plus"
+              variant={showZoom ? 'active' : 'canvas'}
+              tooltip="Show the page zoomed in where the visitor pinch-zoomed"
+              onClick={() => setShowZoom((value) => !value)}
+              data-testid={testIds.player.zoom}
+            >
+              {"Visitor's zoom"}
+            </ToolbarButton>
+          )}
           {onExitLive && (
             <ToolbarButton
               icon="history-alt"
@@ -878,6 +930,17 @@ export function ReplayPlayer({
                 {speed}x
               </ToolbarButton>
             </Dropdown>
+            {zoom.length > 0 && (
+              <ToolbarButton
+                icon="search-plus"
+                variant={showZoom ? 'active' : 'canvas'}
+                tooltip="Show the page zoomed in where the visitor pinch-zoomed"
+                onClick={() => setShowZoom((value) => !value)}
+                data-testid={testIds.player.zoom}
+              >
+                {"Visitor's zoom"}
+              </ToolbarButton>
+            )}
             <ToolbarButton
               icon="angle-double-right"
               variant={skipInactive ? 'active' : 'canvas'}
@@ -906,6 +969,10 @@ export function ReplayPlayer({
       )}
     </div>
   );
+}
+
+function sameZoom(a: Zoom, b: Zoom): boolean {
+  return (Object.keys(a) as Array<keyof Zoom>).every((key) => a[key] === b[key]);
 }
 
 const getStyles = (theme: GrafanaTheme2) => ({
