@@ -18,6 +18,7 @@ import {
 } from '@grafana/ui';
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
+import { chunksHaveTouchInput, LayoutViewport, type Viewport } from '../../lib/layoutViewport';
 import { liveStartIndex, pageAt } from '../../lib/playerEvents';
 import type { ReplayChunk, ReplayTrack } from '../../lib/replayEvents';
 import {
@@ -384,8 +385,20 @@ export function ReplayPlayer({
   const attach = useCallback(
     (replayer: Replayer) => {
       replayerRef.current = replayer;
+      // Pinch zooms are recorded as resizes to the zoomed size: replay them at
+      // the layout viewport (see LayoutViewport). rrweb's own handler has sized
+      // the iframe already; this one runs after it.
+      const layoutViewport = new LayoutViewport(() => chunksHaveTouchInput(trackRef.current.chunks));
       replayer.on('resize', (dimension) => {
-        viewportRef.current = dimension as { width: number; height: number };
+        const recorded = dimension as Viewport;
+        const shown = layoutViewport.next(recorded);
+        if (shown.width !== recorded.width || shown.height !== recorded.height) {
+          for (const element of [replayer.iframe, replayer.wrapper.querySelector('canvas.replayer-mouse-tail')]) {
+            element?.setAttribute('width', String(shown.width));
+            element?.setAttribute('height', String(shown.height));
+          }
+        }
+        viewportRef.current = shown;
         rescale();
       });
       if (live) {

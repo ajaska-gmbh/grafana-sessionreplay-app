@@ -10,8 +10,19 @@ class MockReplayer {
   readonly calls: string[] = [];
   readonly added: Array<{ timestamp: number }> = [];
   readonly handlers = new Map<string, Array<(payload?: unknown) => void>>();
-  readonly wrapper = { style: {} as Record<string, string> };
-  readonly iframe = { contentDocument: null };
+  /** Attributes the player sets on the iframe and the mouse tail (rrweb sets them before it on every resize). */
+  readonly sized: Record<string, Record<string, string>> = { iframe: {}, tail: {} };
+  readonly wrapper = {
+    style: {} as Record<string, string>,
+    querySelector: (selector: string) =>
+      selector === 'canvas.replayer-mouse-tail'
+        ? { setAttribute: (name: string, value: string) => (this.sized.tail[name] = value) }
+        : null,
+  };
+  readonly iframe = {
+    contentDocument: null,
+    setAttribute: (name: string, value: string) => (this.sized.iframe[name] = value),
+  };
   current = 0;
   speed = 1;
   readonly service = { state: { context: { events: this.added } } };
@@ -25,8 +36,8 @@ class MockReplayer {
   on(event: string, handler: (payload?: unknown) => void) {
     this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
   }
-  emit(event: string) {
-    this.handlers.get(event)?.forEach((handler) => handler());
+  emit(event: string, payload?: unknown) {
+    this.handlers.get(event)?.forEach((handler) => handler(payload));
   }
   play(offset = this.current) {
     this.current = offset;
@@ -292,6 +303,32 @@ describe('ReplayPlayer, edge cases', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('replays pinch zooms of a touch recording at the layout width, other resizes as recorded', () => {
+    const touchLines = linesOf([
+      { event: meta(0) as Event, gen: 0 },
+      { event: snapshot(1) as Event, gen: 0 },
+      { event: { type: 3, timestamp: 2, data: { source: 6, positions: [] } } as Event, gen: 0 },
+      { event: incremental(MIN) as Event, gen: 0 },
+    ]);
+    const replay = new ReplayTimeline(indexFromLines(touchLines));
+    replay.addChunk('rec1:0', chunksOf(touchLines).get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} />);
+    const [replayer] = MockReplayer.instances;
+
+    act(() => replayer.emit('resize', { width: 320, height: 582 }));
+    expect(replayer.sized.iframe).toEqual({});
+
+    // Zoomed in: rrweb sized the iframe 274 px wide; the page stays laid out at 320.
+    act(() => replayer.emit('resize', { width: 274, height: 506 }));
+    expect(replayer.sized.iframe).toEqual({ width: '320', height: '591' });
+    expect(replayer.sized.tail).toEqual({ width: '320', height: '591' });
+
+    // Turned to landscape: a real resize.
+    replayer.sized.iframe = {};
+    act(() => replayer.emit('resize', { width: 640, height: 300 }));
+    expect(replayer.sized.iframe).toEqual({});
   });
 
   it('says nothing was recorded where the start chunk is loaded but empty and nothing follows', () => {
