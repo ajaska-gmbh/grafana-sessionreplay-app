@@ -1,7 +1,8 @@
 jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn(), getAppEvents: () => ({ publish: jest.fn() }) }));
 
-/** Props the player got, last render last. */
+/** Props the player and the journey got, last render last. */
 const mockPlayerProps: Array<Record<string, unknown>> = [];
+const mockJourneyProps: Array<Record<string, unknown>> = [];
 const mockData: { current: Record<string, unknown> } = { current: {} };
 
 jest.mock('../Player/ReplayPlayer', () => ({
@@ -10,7 +11,12 @@ jest.mock('../Player/ReplayPlayer', () => ({
     return null;
   },
 }));
-jest.mock('../Journey/UserJourney', () => ({ UserJourney: () => null }));
+jest.mock('../Journey/UserJourney', () => ({
+  UserJourney: (props: Record<string, unknown>) => {
+    mockJourneyProps.push(props);
+    return null;
+  },
+}));
 jest.mock('../../hooks/useCallAudio', () => ({ useCallAudio: () => ({ available: false }) }));
 jest.mock('../../hooks/useSessionData', () => ({ useSessionData: () => mockData.current }));
 
@@ -97,6 +103,28 @@ describe('SessionReplay with nothing loaded but the index', () => {
 
     expect(lastProps().markers).toEqual([{ offsetMs: 7 * MIN, kind: 'error', title: 'err' }]);
     expect(lastProps().seekRequest).toEqual({ offsetMs: 21 * MIN, nonce: 1 });
+  });
+
+  it("hands the visitor's pinch zooms to the player and keeps them out of the journey list", () => {
+    const zoomData = {
+      kind: 'event',
+      event_name: 'viewport_zoom',
+      event_data_scale: '2',
+      event_data_offset_left: '10',
+      event_data_offset_top: '20',
+      event_data_width: '160',
+      event_data_height: '291',
+      event_data_layout_width: '320',
+      event_data_layout_height: '582',
+    };
+    const lead = journeyEvent('lead', START + 2 * MIN, 'custom');
+    data({ journey: [journeyEvent('zoom', START + MIN, 'custom', zoomData), lead] });
+    render(<SessionReplay {...props} />);
+
+    expect(lastProps().zoom).toEqual([
+      expect.objectContaining({ timeMs: START + MIN, scale: 2, offsetLeft: 10, offsetTop: 20, layoutWidth: 320 }),
+    ]);
+    expect(mockJourneyProps[mockJourneyProps.length - 1].events).toEqual([lead]);
   });
 
   it('plays the tab from the link, offers the other tabs, and loads where the player asks', () => {

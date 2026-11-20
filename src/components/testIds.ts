@@ -30,6 +30,7 @@ export const testIds = {
     goTo: 'data-testid player-go-to',
     waiting: 'data-testid player-waiting',
     unloaded: 'data-testid player-unloaded',
+    zoom: 'data-testid player-zoom',
     audioLevels: 'data-testid player-audio-levels',
     audioAgent: 'data-testid player-audio-agent',
     audioCustomer: 'data-testid player-audio-customer',

@@ -9,6 +9,7 @@ import { linkOffset } from '../../lib/playerEvents';
 import { LIVE_WINDOW_MS } from '../../lib/sessionStore';
 import { PlayerClock } from '../../lib/playerClock';
 import { eventMatches } from '../../lib/sessionSearch';
+import { ZOOM_EVENT, zoomSamples } from '../../lib/viewportZoom';
 import type { JourneyEvent } from '../../lib/journey';
 import { clockOffsetsOf } from '../../lib/callAudio';
 import { UserJourney } from '../Journey/UserJourney';
@@ -141,6 +142,14 @@ export function SessionReplay(props: SessionReplayProps) {
   // Live with sound: where live starts (rrweb time), fixed when it starts. Set
   // once the session is known to have call audio; changing it restarts the player.
   const [liveSound, setLiveSound] = useState(true);
+
+  // The visitor's pinch zooms drive the player; a few per second while pinching, so not in the journey list.
+  const zoom = useMemo(() => zoomSamples(data.journey), [data.journey]);
+  const journeyShown = useMemo(
+    () =>
+      zoom.length === 0 ? data.journey : data.journey.filter((event) => event.attributes.event_name !== ZOOM_EVENT),
+    [data.journey, zoom]
+  );
 
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
@@ -324,6 +333,7 @@ export function SessionReplay(props: SessionReplayProps) {
             liveStartMs={liveStartMs}
             liveClockKnown={clockOffsetsOf(recording.journey).length > 0}
             liveReceivedAtMs={data.lastReplayMs}
+            zoom={zoom}
             onExitLive={() => {
               setLive(false);
               props.onExitLive?.();
@@ -351,7 +361,7 @@ export function SessionReplay(props: SessionReplayProps) {
       </div>
       <div className={styles.journey}>
         <UserJourney
-          events={data.journey}
+          events={journeyShown}
           recordingStartMs={recordingStartMs}
           clock={clock}
           isHighlighted={isHighlighted}
