@@ -2,7 +2,13 @@ jest.mock('@grafana/runtime', () => ({ getBackendSrv: jest.fn() }));
 
 import { of } from 'rxjs';
 import { getBackendSrv } from '@grafana/runtime';
-import { fetchActiveSessionIds, fetchErrorCounts, fetchMatchingSessionIds } from './sessionQueries';
+import {
+  fetchActiveSessionIds,
+  fetchErrorCounts,
+  fetchFrustrationCounts,
+  fetchMatchingSessionIds,
+  fetchOutcomes,
+} from './sessionQueries';
 
 function seriesResponse(sessions: Array<[string, number]>) {
   return of({
@@ -69,5 +75,59 @@ describe('session list queries', () => {
     expect(exprOf(fetch)).toContain(
       '{source="faro"} |~ " app_name=(?:a|b) " | app_name=~"a|b" |= "kind=exception" | logfmt'
     );
+  });
+});
+
+describe('shop insight queries', () => {
+  const exprOf = (fetch: jest.Mock) =>
+    (fetch.mock.calls[0] as unknown as [{ data: { queries: Array<{ expr: string }> } }])[0].data.queries[0].expr;
+  const labelled = (series: Array<[Record<string, string>, number]>) =>
+    of({
+      data: {
+        results: {
+          A: {
+            frames: series.map(([labels, value]) => ({
+              schema: { fields: [{ name: 'Time' }, { name: 'Value', labels }] },
+              data: { values: [[0], [value]] },
+            })),
+          },
+        },
+      },
+    });
+
+  it('counts frustration events per session', async () => {
+    const fetch = jest.fn(() =>
+      seriesResponse([
+        ['s1', 2],
+        ['s2', 1],
+      ])
+    );
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+
+    expect([...(await fetchFrustrationCounts('loki', ['lp-shop-storefront'], 0, 60_000))]).toEqual([
+      ['s1', 2],
+      ['s2', 1],
+    ]);
+    expect(exprOf(fetch)).toBe(
+      'sum by (session_id) (count_over_time({source="faro"} |= " app_name=lp-shop-storefront " | app_name=~"lp-shop-storefront" |~ "event_name=(?:dead_click|rage_click|error_click|form_invalid)( |$)" | logfmt session_id [60s]))'
+    );
+  });
+
+  it('takes the furthest funnel step per session', async () => {
+    const fetch = jest.fn(() =>
+      labelled([
+        [{ session_id: 's1', session_attr_outcome: 'page_view' }, 4],
+        [{ session_id: 's1', session_attr_outcome: 'initiate_checkout' }, 2],
+        [{ session_id: 's2', session_attr_outcome: 'purchase' }, 1],
+        [{ session_id: 's3' }, 1],
+      ])
+    );
+    (getBackendSrv as jest.Mock).mockReturnValue({ fetch });
+
+    expect([...(await fetchOutcomes('loki', [], 0, 60_000))]).toEqual([
+      ['s1', 'initiate_checkout'],
+      ['s2', 'purchase'],
+    ]);
+    expect(exprOf(fetch)).toContain('|= "session_attr_outcome=" | logfmt session_id, session_attr_outcome [60s]');
   });
 });

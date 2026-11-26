@@ -11,6 +11,8 @@ import {
   ComboboxOption,
   FilterInput,
   InteractiveTable,
+  Icon,
+  InlineSwitch,
   LinkButton,
   LoadingPlaceholder,
   MultiCombobox,
@@ -24,10 +26,13 @@ import {
   fetchActiveSessionIds,
   fetchAppNames,
   fetchErrorCounts,
+  fetchFrustrationCounts,
   fetchMatchingSessionIds,
+  fetchOutcomes,
   fetchSessions,
 } from '../lib/sessionQueries';
 import { searchParam, searchValue } from '../lib/sessionSearch';
+import { FUNNEL_STEPS, STEP_LABELS } from '../lib/insights';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
@@ -41,7 +46,26 @@ const LOOKBACKS: Array<ComboboxOption<number>> = [
   { label: 'Last 14 days', value: 14 * 24 * 3600_000 },
 ];
 
-type Row = SessionSummary & { id: string; live: boolean; matched: boolean };
+type Row = SessionSummary & {
+  id: string;
+  live: boolean;
+  matched: boolean;
+  frustration: number;
+  outcome?: string;
+  /** For sorting: the outcome's place in the funnel. */
+  outcomeRank: number;
+};
+
+type Device = 'phone' | 'desktop';
+const DEVICES: Array<ComboboxOption<Device>> = [
+  { label: 'Phones and tablets', value: 'phone' },
+  { label: 'Desktop', value: 'desktop' },
+];
+/** "Stopped at": the furthest step reached, so "Checkout" lists who reached the checkout and went no further. */
+const OUTCOMES: Array<ComboboxOption<string>> = FUNNEL_STEPS.map((step) => ({
+  label: `Stopped at: ${STEP_LABELS[step]}`,
+  value: step,
+}));
 
 /** How long typing has to pause before the search fields are looked up. */
 const SEARCH_DEBOUNCE_MS = 400;
@@ -72,6 +96,8 @@ interface QueryResult {
   sessions: SessionSummary[];
   truncated?: boolean;
   errors: Map<string, number>;
+  frustration: Map<string, number>;
+  outcomes: Map<string, string>;
   active: Set<string>;
   failure?: string;
 }
@@ -85,6 +111,11 @@ function SessionsPage() {
   const [apps, setAppsState] = useState<string[]>(() => appsParam(params.get('apps')));
   const [appOptions, setAppOptions] = useState<Array<ComboboxOption<string>>>([]);
   const [environment, setEnvironment] = useState<string | undefined>();
+  const [outcome, setOutcomeState] = useState<string | undefined>(() => params.get('outcome') ?? undefined);
+  const [device, setDeviceState] = useState<Device | undefined>(
+    () => DEVICES.find((option) => option.value === params.get('device'))?.value
+  );
+  const [problemsOnly, setProblemsOnlyState] = useState(() => params.get('problems') === '1');
   const [search, setSearchState] = useState(() => searchParam(params.get('q')));
   const [result, setResult] = useState<QueryResult>();
   const [matches, setMatches] = useState<Matches>();
@@ -110,6 +141,18 @@ function SessionsPage() {
     setAppsState(value);
     remember('apps', value.join(',') || undefined);
   };
+  const setOutcome = (value: string | undefined) => {
+    setOutcomeState(value);
+    remember('outcome', value);
+  };
+  const setDevice = (value: Device | undefined) => {
+    setDeviceState(value);
+    remember('device', value);
+  };
+  const setProblemsOnly = (value: boolean) => {
+    setProblemsOnlyState(value);
+    remember('problems', value ? '1' : undefined);
+  };
   const setLookback = (value: number) => {
     setLookbackState(value);
     remember('lookback', value === DEFAULT_LOOKBACK ? undefined : String(value));
@@ -123,6 +166,8 @@ function SessionsPage() {
   const sessions = useMemo(() => result?.sessions ?? [], [result]);
   const errors = useMemo(() => result?.errors ?? new Map<string, number>(), [result]);
   const active = useMemo(() => result?.active ?? new Set<string>(), [result]);
+  const frustration = useMemo(() => result?.frustration ?? new Map<string, number>(), [result]);
+  const outcomes = useMemo(() => result?.outcomes ?? new Map<string, string>(), [result]);
   const nowMs = result?.nowMs ?? 0;
   const failure = loading ? undefined : result?.failure;
 
@@ -142,8 +187,11 @@ function SessionsPage() {
       fetchSessions(lokiUid, apps, now - lookback, now),
       fetchErrorCounts(lokiUid, apps, now - lookback, now).catch(() => new Map<string, number>()),
       fetchActiveSessionIds(lokiUid, apps, now, LIVE_WINDOW_MS).catch(() => new Set<string>()),
+      // Optional: apps without the shop's insights have neither; a failure leaves the columns empty.
+      fetchFrustrationCounts(lokiUid, apps, now - lookback, now).catch(() => new Map<string, number>()),
+      fetchOutcomes(lokiUid, apps, now - lookback, now).catch(() => new Map<string, string>()),
     ])
-      .then(([found, errorCounts, active]) => {
+      .then(([found, errorCounts, active, frustrationCounts, outcomeSteps]) => {
         if (!cancelled) {
           setResult({
             key,
@@ -151,6 +199,8 @@ function SessionsPage() {
             sessions: found.sessions,
             truncated: found.truncated,
             errors: errorCounts,
+            frustration: frustrationCounts,
+            outcomes: outcomeSteps,
             active,
           });
         }
@@ -158,7 +208,16 @@ function SessionsPage() {
       .catch((error: unknown) => {
         if (!cancelled) {
           const failureText = (error as { data?: { message?: string } })?.data?.message ?? String(error);
-          setResult({ key, nowMs: now, sessions: [], errors: new Map(), active: new Set(), failure: failureText });
+          setResult({
+            key,
+            nowMs: now,
+            sessions: [],
+            errors: new Map(),
+            frustration: new Map(),
+            outcomes: new Map(),
+            active: new Set(),
+            failure: failureText,
+          });
         }
       });
 
@@ -215,15 +274,38 @@ function SessionsPage() {
     return all
       .filter((session) => !environment || session.environment === environment)
       .filter((session) => matchedIds.has(session.sessionId) || matchesSearch(session, search))
-      .map((session) => ({
-        ...session,
-        id: session.sessionId,
-        errors: errors.get(session.sessionId) ?? 0,
-        live: active.has(session.sessionId),
-        matched: matchedIds.has(session.sessionId),
-      }))
+      .filter((session) => !device || session.mobile === (device === 'phone'))
+      .map((session) => {
+        const reached = outcomes.get(session.sessionId);
+        return {
+          ...session,
+          id: session.sessionId,
+          errors: errors.get(session.sessionId) ?? 0,
+          frustration: frustration.get(session.sessionId) ?? 0,
+          outcome: reached,
+          outcomeRank: reached ? FUNNEL_STEPS.indexOf(reached as never) : -1,
+          live: active.has(session.sessionId),
+          matched: matchedIds.has(session.sessionId),
+        };
+      })
+      .filter((row) => !outcome || row.outcome === outcome)
+      .filter((row) => !problemsOnly || row.frustration > 0 || (row.errors ?? 0) > 0)
       .sort((a, b) => Number(b.matched) - Number(a.matched) || b.startedMs - a.startedMs);
-  }, [sessions, currentMatches, environment, search, matchedIds, errors, active]);
+  }, [
+    sessions,
+    currentMatches,
+    environment,
+    search,
+    matchedIds,
+    errors,
+    active,
+    frustration,
+    outcomes,
+    outcome,
+    device,
+    problemsOnly,
+  ]);
+  const hasInsights = frustration.size > 0 || outcomes.size > 0;
 
   const columns = useMemo<Array<Column<Row>>>(
     () => [
@@ -266,7 +348,49 @@ function SessionsPage() {
         id: 'browser',
         header: 'Browser',
         sortType: 'string',
-        cell: ({ row }) => [row.original.browser, row.original.os].filter(Boolean).join(' · ') || '–',
+        cell: ({ row }) => (
+          <Stack gap={0.5} alignItems="center">
+            {row.original.mobile && (
+              <Tooltip content="Phone or tablet">
+                <span aria-label="Phone or tablet" role="img">
+                  <Icon name="mobile-android" />
+                </span>
+              </Tooltip>
+            )}
+            {[row.original.browser, row.original.os].filter(Boolean).join(' · ') || '–'}
+          </Stack>
+        ),
+      },
+      {
+        id: 'outcomeRank',
+        header: 'Funnel',
+        sortType: 'number',
+        cell: ({ row }) =>
+          row.original.outcome ? (
+            <Tooltip content={`Furthest step: ${row.original.outcome}`}>
+              <span className={styles.outcome} data-outcome={row.original.outcome}>
+                <span className={styles.outcomeDot} />
+                {STEP_LABELS[row.original.outcome] ?? row.original.outcome}
+              </span>
+            </Tooltip>
+          ) : (
+            ''
+          ),
+      },
+      {
+        id: 'frustration',
+        header: 'Frustration',
+        sortType: 'number',
+        cell: ({ row }) =>
+          row.original.frustration ? (
+            <Tooltip content="Dead, rage and error taps and form errors: open the replay's Insights tab">
+              <span>
+                <Badge text={String(row.original.frustration)} color="orange" icon="exclamation-circle" />
+              </span>
+            </Tooltip>
+          ) : (
+            ''
+          ),
       },
       { id: 'recordings', header: 'Page loads', sortType: 'number' },
       {
@@ -314,7 +438,7 @@ function SessionsPage() {
         ),
       },
     ],
-    [nowMs, lookup]
+    [nowMs, lookup, styles]
   );
 
   return (
@@ -350,6 +474,34 @@ function SessionsPage() {
             options={environments.map((value) => ({ label: value, value }))}
             value={environment ?? null}
             onChange={(selected) => setEnvironment(selected?.value)}
+          />
+          {(hasInsights || outcome || problemsOnly) && (
+            <>
+              <Combobox
+                width={28}
+                placeholder="Any funnel step"
+                isClearable
+                options={OUTCOMES}
+                value={outcome ?? null}
+                onChange={(selected) => setOutcome(selected?.value)}
+                data-testid={testIds.sessions.outcome}
+              />
+              <InlineSwitch
+                showLabel
+                label="With problems only"
+                value={problemsOnly}
+                onChange={(event) => setProblemsOnly(event.currentTarget.checked)}
+                data-testid={testIds.sessions.problems}
+              />
+            </>
+          )}
+          <Combobox
+            width={24}
+            placeholder="All devices"
+            isClearable
+            options={DEVICES}
+            value={device ?? null}
+            onChange={(selected) => setDevice(selected?.value)}
           />
           <Combobox
             width={20}
@@ -394,4 +546,16 @@ const getStyles = (theme: GrafanaTheme2) => ({
   page: css({ display: 'flex', flexDirection: 'column', gap: theme.spacing(2) }),
   search: css({ flex: 1, minWidth: 280 }),
   empty: css({ color: theme.colors.text.secondary }),
+  outcome: css({
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: theme.spacing(0.75),
+    '--outcome': theme.colors.text.disabled,
+    '&[data-outcome="add_to_cart"], &[data-outcome="initiate_checkout"], &[data-outcome="add_payment_info"]': {
+      '--outcome': theme.colors.warning.main,
+    },
+    '&[data-outcome="checkout_blocked"]': { '--outcome': theme.colors.error.main },
+    '&[data-outcome="purchase"]': { '--outcome': theme.colors.success.main },
+  }),
+  outcomeDot: css({ width: 8, height: 8, borderRadius: '50%', background: 'var(--outcome)' }),
 });

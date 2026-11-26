@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Insights**: where the visitor got stuck, first. The replay opens on an Insights tab (when the session had a problem): the funnel the visitor got through (viewed → cart → checkout → payment info → purchase, a blocked pay press in red), then every problem in time order with a severity dot — dead taps (on a button: high; on something not clickable the visitor expected to be: medium), rage taps, taps followed by a JS error, form errors, blocked pay presses, JS errors, failed requests (4xx/5xx, network), slow and sluggish web vitals, pinch zooms (text or buttons too small?) and where each page was left (time, how much of the page was seen, last tap, last field and whether it was filled). Chips count and filter by kind; a click plays from 1.5 s before the moment.
+- **Problem taps on the page**: while playback passes a dead, rage or error tap, a pulsing ring marks the spot on the replayed page; problems are orange diamonds on the timeline (errors stay red dots).
+- Dead and rage taps come from LP Shop's tap detector (`dead_click`, `rage_click`, `error_click`, `form_invalid`, `page_exit` Faro events, `session_attr_insights=1`). Recordings without it (older ones, other apps) are searched for them in the recording itself: a click with no DOM change, scroll, input, focus elsewhere or page load within 1 s, or 3+ clicks within 1 s and 40 px, named by the element's text.
+- Journey: a **Frustration** filter and "Stuck" badge for those events; page exits are navigation entries.
+- Sessions list: **Funnel** (furthest step, from `session_attr_outcome`) and **Frustration** columns, a phone icon for phones and tablets, and filters _Stopped at: <step>_, _With problems only_ and device, kept in the link (`outcome=`, `problems=1`, `device=phone|desktop`).
+
 ## 0.9.0
 
 - Phones and tablets replay as the visitor saw them, checked by a new bench (`npm run bench`, #28) against recorded visits on emulated iPhone, iPad, Pixel and Galaxy Tab and against real sessions:

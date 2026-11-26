@@ -21,6 +21,8 @@ export interface SessionSummary {
   firstPageUrl?: string;
   browser?: string;
   os?: string;
+  /** Faro's browser_mobile: a phone or tablet. */
+  mobile?: boolean;
   errors?: number;
 }
 
@@ -62,6 +64,7 @@ export function summariseSessions(entries: Array<{ tsNs: string; line: string }>
         firstPageUrl: fields.page_url,
         browser: [fields.browser_name, fields.browser_version].filter(Boolean).join(' ') || undefined,
         os: fields.browser_os,
+        mobile: fields.browser_mobile === undefined ? undefined : fields.browser_mobile === 'true',
       });
       continue;
     }

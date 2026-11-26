@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { css, cx } from '@emotion/css';
+import { css, cx, keyframes } from '@emotion/css';
 import { Replayer } from '@grafana/rrweb';
 import './rrweb.css';
 import type { eventWithTime } from '@grafana/rrweb-types';
@@ -63,8 +63,33 @@ const THUMB_INSET_PX = 8;
 
 export interface TimelineMarker {
   offsetMs: number;
-  kind: 'error' | 'navigation';
+  kind: 'error' | 'navigation' | 'frustration';
   title: string;
+}
+
+/** A problem tap (dead, rage, error tap): ringed on the page while it plays. */
+export interface TapMark {
+  /** rrweb time (epoch ms). */
+  timeMs: number;
+  /** Viewport px, as rrweb records the mouse. */
+  x: number;
+  y: number;
+  severity: 'high' | 'medium' | 'low' | 'info';
+  title: string;
+}
+
+/** How long a tap stays ringed after it happened. */
+export const TAP_SHOWN_MS = 1800;
+
+/** The tap to ring at `atMs`: the latest one within TAP_SHOWN_MS before it (taps sorted by time). */
+export function tapAt(taps: readonly TapMark[], atMs: number): TapMark | undefined {
+  for (let index = taps.length - 1; index >= 0; index--) {
+    const tap = taps[index];
+    if (tap.timeMs <= atMs) {
+      return atMs - tap.timeMs <= TAP_SHOWN_MS ? tap : undefined;
+    }
+  }
+  return undefined;
 }
 
 export interface SeekRequest {
@@ -112,6 +137,8 @@ export interface ReplayPlayerProps {
    * width (LayoutViewport).
    */
   zoom?: readonly ZoomSample[];
+  /** Problem taps, sorted: ringed on the page as playback passes them. */
+  taps?: readonly TapMark[];
 }
 
 interface PageInfo {
@@ -135,6 +162,7 @@ const LIVE_WAITING_TEXT = {
 };
 
 const NO_ZOOM: readonly ZoomSample[] = [];
+const NO_TAPS: readonly TapMark[] = [];
 
 /** A timeline drag asks the loader for its target once the thumb rested this long. */
 export const FOCUS_DEBOUNCE_MS = 250;
@@ -166,6 +194,7 @@ export function ReplayPlayer({
   liveReceivedAtMs,
   onExitLive,
   zoom = NO_ZOOM,
+  taps = NO_TAPS,
 }: ReplayPlayerProps) {
   const styles = useStyles2(getStyles);
   const theme = useTheme2();
@@ -360,6 +389,43 @@ export function ReplayPlayer({
     applyZoom(clock.get());
   }, [zoom, applyZoom, clock]);
 
+  // The problem tap at the playhead, ringed inside rrweb's wrapper so it scales and moves with the page.
+  const tapsRef = useRef(taps);
+  const ringRef = useRef<HTMLDivElement | null>(null);
+  const shownTapRef = useRef<TapMark | undefined>(undefined);
+  const showTap = useCallback(
+    (state: ClockState) => {
+      const ring = ringRef.current;
+      if (!ring) {
+        return;
+      }
+      const tap =
+        state.startTimeMs === undefined ? undefined : tapAt(tapsRef.current, state.startTimeMs + state.offsetMs);
+      if (tap === shownTapRef.current) {
+        return;
+      }
+      shownTapRef.current = tap;
+      ring.hidden = !tap;
+      if (tap) {
+        ring.style.left = `${tap.x}px`;
+        ring.style.top = `${tap.y}px`;
+        ring.dataset.severity = tap.severity;
+        ring.title = tap.title;
+        // Restart the pulse for every new tap.
+        ring.classList.remove(styles.tapRingPulse);
+        void ring.offsetWidth;
+        ring.classList.add(styles.tapRingPulse);
+      }
+    },
+    [styles]
+  );
+  useClockEffect(clock, showTap);
+  useEffect(() => {
+    tapsRef.current = taps;
+    shownTapRef.current = undefined;
+    showTap(clock.get());
+  }, [taps, showTap, clock]);
+
   // The timeline's thumb follows every frame without re-rendering the player.
   useClockEffect(clock, (state) => {
     if (rangeRef.current) {
@@ -441,6 +507,13 @@ export function ReplayPlayer({
   const attach = useCallback(
     (replayer: Replayer) => {
       replayerRef.current = replayer;
+      const ring = document.createElement('div');
+      ring.className = styles.tapRing;
+      ring.hidden = true;
+      ring.dataset.testid = 'tap-ring';
+      replayer.wrapper.appendChild(ring);
+      ringRef.current = ring;
+      shownTapRef.current = undefined;
       // What the replay lays the page out at (see LayoutViewport): pinch zooms
       // are recorded as resizes to the zoomed size and replayed at the layout
       // viewport; a page load starts afresh (at its real width when it opened
@@ -568,7 +641,7 @@ export function ReplayPlayer({
         clock.update({ skipping: false });
       });
     },
-    [live, rescale, startTicker, stopTicker, setWant, feed, showWaiting, clock]
+    [live, rescale, startTicker, stopTicker, setWant, feed, showWaiting, clock, styles]
   );
 
   // Live: create the replayer once the newest chunk is loaded; afterwards
@@ -925,7 +998,11 @@ export function ReplayPlayer({
                       aria-label={marker.title}
                       className={cx(
                         styles.marker,
-                        marker.kind === 'error' ? styles.markerError : styles.markerNavigation
+                        marker.kind === 'error'
+                          ? styles.markerError
+                          : marker.kind === 'frustration'
+                            ? styles.markerFrustration
+                            : styles.markerNavigation
                       )}
                       style={{ left: `${Math.min(100, Math.max(0, (marker.offsetMs / total) * 100))}%` }}
                       onClick={() => seek(marker.offsetMs)}
@@ -1062,6 +1139,11 @@ function sameZoom(a: Zoom, b: Zoom): boolean {
   return (Object.keys(a) as Array<keyof Zoom>).every((key) => a[key] === b[key]);
 }
 
+const tapPulse = keyframes({
+  '0%': { transform: 'scale(0.4)', opacity: 1 },
+  '100%': { transform: 'scale(1.6)', opacity: 0.35 },
+});
+
 const getStyles = (theme: GrafanaTheme2) => ({
   container: css({
     display: 'flex',
@@ -1163,6 +1245,26 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
   markerError: css({ background: theme.colors.error.main }),
   markerNavigation: css({ background: theme.colors.info.main }),
+  // A diamond, so problems stand out from page loads (dots) without relying on colour alone.
+  markerFrustration: css({ background: theme.colors.warning.main, borderRadius: 1, transform: 'rotate(45deg)' }),
+  tapRing: css({
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    marginLeft: -22,
+    marginTop: -22,
+    borderRadius: '50%',
+    border: `3px solid ${theme.colors.warning.main}`,
+    background: 'rgba(255, 152, 48, 0.18)',
+    pointerEvents: 'none',
+    zIndex: 3,
+    '&[data-severity="high"]': { borderColor: theme.colors.error.main, background: 'rgba(242, 73, 92, 0.18)' },
+  }),
+  tapRingPulse: css({
+    '@media (prefers-reduced-motion: no-preference)': {
+      animation: `${tapPulse} 0.9s ease-out 2`,
+    },
+  }),
   controls: css({
     display: 'flex',
     alignItems: 'center',

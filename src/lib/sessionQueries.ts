@@ -4,6 +4,10 @@ import { appFilter, appLineFilter, eventLineFilter, sessionLineFilter, STREAMS }
 import { createLokiFetcher, logqlString } from './loki';
 import { REPLAY_STARTED_EVENT, summariseSessions, type SessionSummary } from './sessions';
 import { sessionSearchQuery } from './sessionSearch';
+import { furthestStep } from './insights';
+
+/** The shop's frustration events (see journey.ts): counted per session for the list. */
+export const FRUSTRATION_EVENTS = ['dead_click', 'rage_click', 'error_click', 'form_invalid'] as const;
 
 interface MetricFrame {
   schema?: { fields?: Array<{ name: string; labels?: Record<string, string> }> };
@@ -98,6 +102,44 @@ export async function fetchErrorCounts(
     }
   }
   return counts;
+}
+
+/** Frustration events (dead, rage, error taps, form errors) per session in the range. */
+export async function fetchFrustrationCounts(
+  lokiUid: string,
+  apps: string[],
+  fromMs: number,
+  toMs: number
+): Promise<Map<string, number>> {
+  const names = logqlString(`event_name=(?:${FRUSTRATION_EVENTS.join('|')})( |$)`);
+  const expr = `sum by (session_id) (count_over_time(${STREAMS.faro}${appLineFilter(apps)}${appFilter(apps)} |~ ${names} | logfmt session_id [${rangeSeconds(fromMs, toMs)}s]))`;
+  const counts = new Map<string, number>();
+  for (const { labels, value } of await instantSeries(lokiUid, expr, fromMs, toMs)) {
+    if (labels.session_id) {
+      counts.set(labels.session_id, (counts.get(labels.session_id) ?? 0) + value);
+    }
+  }
+  return counts;
+}
+
+/**
+ * The furthest funnel step per session (`session_attr_outcome`, which LP Shop
+ * puts on every signal of a visit): `session_id -> step`.
+ */
+export async function fetchOutcomes(
+  lokiUid: string,
+  apps: string[],
+  fromMs: number,
+  toMs: number
+): Promise<Map<string, string>> {
+  const expr = `sum by (session_id, session_attr_outcome) (count_over_time(${STREAMS.faro}${appLineFilter(apps)}${appFilter(apps)} |= "session_attr_outcome=" | logfmt session_id, session_attr_outcome [${rangeSeconds(fromMs, toMs)}s]))`;
+  const steps = new Map<string, string[]>();
+  for (const { labels } of await instantSeries(lokiUid, expr, fromMs, toMs)) {
+    if (labels.session_id && labels.session_attr_outcome) {
+      steps.set(labels.session_id, [...(steps.get(labels.session_id) ?? []), labels.session_attr_outcome]);
+    }
+  }
+  return new Map([...steps].map(([id, reached]) => [id, furthestStep(reached)!]));
 }
 
 /** Sessions whose recording received data in the last `windowMs` (epoch ms "now" given). */

@@ -15,15 +15,18 @@ import {
 import { formatOffset, traceExploreUrl } from '../../lib/format';
 import type { JourneyCategory, JourneyEvent } from '../../lib/journey';
 import { PlayerClock, useClockValue } from '../../lib/playerClock';
+import { problemCount, type SessionInsights } from '../../lib/insights';
+import { InsightsPanel } from './InsightsPanel';
 
 /** Stands in when the journey is shown without a player. */
 const STATIC_CLOCK = new PlayerClock();
 import { testIds } from '../testIds';
 
-type JourneyTab = 'journey' | 'network';
+type JourneyTab = 'insights' | 'journey' | 'network';
 type JourneyFilter = Exclude<JourneyCategory, 'network'>;
 
 const FILTERS: Array<{ value: JourneyFilter; label: string }> = [
+  { value: 'frustration', label: 'Frustration' },
   { value: 'navigation', label: 'Navigation' },
   { value: 'custom', label: 'Custom' },
   { value: 'error', label: 'Errors' },
@@ -40,6 +43,8 @@ export interface UserJourneyProps {
   /** Marks the events a search found (e.g. the calls with the searched lead). */
   isHighlighted?: (event: JourneyEvent) => boolean;
   onJump: (event: JourneyEvent) => void;
+  /** The session's problems and funnel: shown as the first tab when given. */
+  insights?: SessionInsights;
 }
 
 /**
@@ -54,7 +59,7 @@ const OVERSCAN = 12;
 const INITIAL_LIST_RECT = { width: 400, height: 600 };
 
 /** Index of the last event at or before the playhead (events sorted by time), by binary search. */
-export function currentEventIndex(events: JourneyEvent[], playheadMs: number | undefined): number {
+export function currentEventIndex(events: ReadonlyArray<{ timeMs: number }>, playheadMs: number | undefined): number {
   if (playheadMs === undefined) {
     return -1;
   }
@@ -85,9 +90,14 @@ export const UserJourney = memo(function UserJourney({
   tempoUid,
   isHighlighted,
   onJump,
+  insights,
 }: UserJourneyProps) {
   const styles = useStyles2(getStyles);
-  const [tab, setTab] = useState<JourneyTab>('journey');
+  const [chosenTab, setTab] = useState<JourneyTab>();
+  // Insights first once the session has any problem; the journey otherwise, until a tab is chosen.
+  const problems = insights ? problemCount(insights.insights) : 0;
+  const tab: JourneyTab =
+    chosenTab === 'insights' && !insights ? 'journey' : (chosenTab ?? (problems > 0 ? 'insights' : 'journey'));
   const [filters, setFilters] = useState<Set<JourneyFilter>>(new Set());
   const [follow, setFollow] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -100,6 +110,9 @@ export const UserJourney = memo(function UserJourney({
     if (tab === 'network') {
       return networkEvents;
     }
+    if (tab === 'insights') {
+      return [];
+    }
     return filters.size === 0
       ? journeyEvents
       : journeyEvents.filter((event) => filters.has(event.category as JourneyFilter));
@@ -111,6 +124,18 @@ export const UserJourney = memo(function UserJourney({
     [visible]
   );
   const current = useClockValueOrNot(clock, selectCurrent);
+  const insightList = insights?.insights;
+  const selectInsight = useCallback(
+    (state: { offsetMs: number; startTimeMs?: number }) =>
+      insightList && tab === 'insights'
+        ? currentEventIndex(
+            insightList,
+            state.startTimeMs === undefined ? undefined : state.startTimeMs + state.offsetMs
+          )
+        : -1,
+    [insightList, tab]
+  );
+  const currentInsight = useClockValueOrNot(clock, selectInsight);
 
   const getScrollElement = useCallback(() => listRef.current, []);
   // The open row's height, measured whenever its content changes size.
@@ -182,6 +207,9 @@ export const UserJourney = memo(function UserJourney({
       </div>
 
       <TabsBar>
+        {insights && (
+          <Tab label="Insights" counter={problems} active={tab === 'insights'} onChangeTab={() => setTab('insights')} />
+        )}
         <Tab
           label="Journey"
           counter={journeyEvents.length}
@@ -210,9 +238,18 @@ export const UserJourney = memo(function UserJourney({
         </div>
       )}
 
-      <div ref={listRef} className={styles.list}>
-        {loading && visible.length === 0 && <LoadingPlaceholder text="Loading events…" />}
-        {!loading && visible.length === 0 && <div className={styles.empty}>No events.</div>}
+      {tab === 'insights' && insights && (
+        <InsightsPanel
+          summary={insights}
+          recordingStartMs={recordingStartMs}
+          current={currentInsight}
+          onJump={onJump}
+        />
+      )}
+
+      <div ref={listRef} className={cx(styles.list, tab === 'insights' && styles.hidden)}>
+        {tab !== 'insights' && loading && visible.length === 0 && <LoadingPlaceholder text="Loading events…" />}
+        {tab !== 'insights' && !loading && visible.length === 0 && <div className={styles.empty}>No events.</div>}
         {visible.length > 0 && (
           <div className={styles.rows} style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((item) => {
@@ -307,6 +344,8 @@ function CategoryBadge({ category }: { category: JourneyCategory }) {
       return <Badge text="HTTP" color="purple" />;
     case 'error':
       return <Badge text="Error" color="red" icon="exclamation-triangle" />;
+    case 'frustration':
+      return <Badge text="Stuck" color="orange" icon="exclamation-circle" />;
     default:
       return <Badge text="Event" color="green" />;
   }
@@ -331,6 +370,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   title: css({ margin: 0 }),
   filters: css({ display: 'flex', gap: theme.spacing(0.5), padding: theme.spacing(1, 2, 0) }),
   list: css({ flex: 1, overflowY: 'auto', padding: theme.spacing(1, 0), minHeight: 0 }),
+  hidden: css({ display: 'none' }),
   empty: css({ padding: theme.spacing(2), color: theme.colors.text.secondary }),
   rows: css({ position: 'relative', width: '100%' }),
   row: css({

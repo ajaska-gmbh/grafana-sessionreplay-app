@@ -11,6 +11,9 @@ import { PlayerClock } from '../../lib/playerClock';
 import { eventMatches } from '../../lib/sessionSearch';
 import { ZOOM_EVENT, zoomSamples } from '../../lib/viewportZoom';
 import type { JourneyEvent } from '../../lib/journey';
+import { sessionInsights } from '../../lib/insights';
+import { recordedFrustration } from '../../lib/recordedFrustration';
+import type { ReplayChunk } from '../../lib/replayEvents';
 import { clockOffsetsOf } from '../../lib/callAudio';
 import { UserJourney } from '../Journey/UserJourney';
 import { CallAudioTimeline } from '../Player/CallAudioTimeline';
@@ -72,6 +75,24 @@ export function tabAt(tracks: ReadonlyArray<{ startMs: number; endMs?: number }>
   }
   const next = tracks.findIndex((track) => track.startMs > atMs);
   return next === -1 ? undefined : next;
+}
+
+/** Taps found in a chunk's recording: chunks are replaced, never changed, so each is analysed once. */
+const recordedByChunk = new WeakMap<ReplayChunk, JourneyEvent[]>();
+
+/** Dead and rage taps found in the loaded chunks' recordings (see recordedFrustration). */
+export function recordedTaps(chunks: readonly ReplayChunk[], touch: boolean): JourneyEvent[] {
+  return chunks.flatMap((chunk) => {
+    if (!chunk.loaded) {
+      return [];
+    }
+    let found = recordedByChunk.get(chunk);
+    if (!found) {
+      found = recordedFrustration(chunk.events, touch);
+      recordedByChunk.set(chunk, found);
+    }
+    return found;
+  });
 }
 
 /** The nonce of the one seek to a search match; the player's own seeks use the time. */
@@ -151,18 +172,44 @@ export function SessionReplay(props: SessionReplayProps) {
     [data.journey, zoom]
   );
 
+  const touch = useMemo(() => data.journey.some((event) => event.attributes.browser_mobile === 'true'), [data.journey]);
+  const detector = useMemo(
+    () => data.journey.some((event) => event.attributes.session_attr_insights === '1'),
+    [data.journey]
+  );
+  const recorded = useMemo(
+    () => (detector || !current ? [] : recordedTaps(current.chunks, touch)),
+    [detector, current, touch]
+  );
+  const insights = useMemo(() => sessionInsights(data.journey, recorded), [data.journey, recorded]);
+  const journeyWithRecorded = useMemo(
+    () => (recorded.length === 0 ? journeyShown : [...journeyShown, ...recorded].sort((a, b) => a.timeMs - b.timeMs)),
+    [journeyShown, recorded]
+  );
+  const taps = useMemo(
+    () =>
+      insights.insights.flatMap((found) =>
+        found.point ? [{ timeMs: found.timeMs, ...found.point, severity: found.severity, title: found.title }] : []
+      ),
+    [insights]
+  );
+
   const markers = useMemo<TimelineMarker[]>(() => {
     if (recordingStartMs === undefined) {
       return [];
     }
-    return data.journey
-      .filter((event) => event.category === 'error' || event.category === 'navigation')
-      .map((event) => ({
-        offsetMs: event.timeMs - recordingStartMs,
-        kind: event.category === 'error' ? 'error' : 'navigation',
-        title: event.title,
+    const pages = data.journey
+      .filter((event) => event.category === 'navigation' && event.attributes.event_name !== 'page_exit')
+      .map((event) => ({ offsetMs: event.timeMs - recordingStartMs, kind: 'navigation' as const, title: event.title }));
+    const problems = insights.insights
+      .filter((found) => found.severity === 'high' || found.severity === 'medium')
+      .map((found) => ({
+        offsetMs: found.timeMs - recordingStartMs,
+        kind: found.kind === 'js_error' ? ('error' as const) : ('frustration' as const),
+        title: found.title,
       }));
-  }, [data.journey, recordingStartMs]);
+    return [...pages, ...problems];
+  }, [data.journey, insights, recordingStartMs]);
 
   // The recording the session continues, when it has no recording.started of its own (a later Faro session of the page).
   const recording = useInheritedRecording({
@@ -334,6 +381,7 @@ export function SessionReplay(props: SessionReplayProps) {
             liveClockKnown={clockOffsetsOf(recording.journey).length > 0}
             liveReceivedAtMs={data.lastReplayMs}
             zoom={zoom}
+            taps={taps}
             onExitLive={() => {
               setLive(false);
               props.onExitLive?.();
@@ -361,7 +409,8 @@ export function SessionReplay(props: SessionReplayProps) {
       </div>
       <div className={styles.journey}>
         <UserJourney
-          events={journeyShown}
+          events={journeyWithRecorded}
+          insights={insights}
           recordingStartMs={recordingStartMs}
           clock={clock}
           isHighlighted={isHighlighted}

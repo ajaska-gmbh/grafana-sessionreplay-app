@@ -1,6 +1,6 @@
 import { parseLogfmt } from './logfmt';
 
-export type JourneyCategory = 'navigation' | 'custom' | 'error' | 'network';
+export type JourneyCategory = 'navigation' | 'custom' | 'error' | 'network' | 'frustration';
 
 export interface JourneyEvent {
   id: string;
@@ -98,6 +98,91 @@ function networkEvent(fields: Record<string, string>, label: string) {
   };
 }
 
+/** Where the visitor tapped or clicked: a phone or tablet taps. */
+export function tapWord(fields: Record<string, string>): 'tap' | 'click' {
+  return fields.browser_mobile === 'true' ? 'tap' : 'click';
+}
+
+/** `“Add to cart” (button)`: what was clicked, by its text, else its path. */
+export function targetText(fields: Record<string, string>): string {
+  const label = fields.event_data_label?.trim();
+  const tag = fields.event_data_tag;
+  if (label) {
+    return `“${label}”${tag ? ` (${tag})` : ''}`;
+  }
+  return fields.event_data_target || tag || 'the page';
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * The shop's frustration and exit signals (telemetry/insights.ts in LP Shop):
+ * dead, rage and error clicks, form errors, and where a page was left.
+ */
+function frustrationEvent(
+  name: string,
+  fields: Record<string, string>
+): Pick<JourneyEvent, 'category' | 'title' | 'detail'> | undefined {
+  const tap = tapWord(fields);
+  const path = fields.event_data_page_path;
+  switch (name) {
+    case 'dead_click':
+      return {
+        category: 'frustration',
+        title: `Dead ${tap} on ${targetText(fields)}`,
+        detail:
+          fields.event_data_interactive === '1'
+            ? `Looks clickable, nothing happened within 1 s${path ? ` · ${path}` : ''}`
+            : `Not clickable: the visitor expected it to be${path ? ` · ${path}` : ''}`,
+      };
+    case 'rage_click':
+      return {
+        category: 'frustration',
+        title: `Rage ${tap}: ${fields.event_data_count ?? 'several'}× on ${targetText(fields)}`,
+        detail: path,
+      };
+    case 'error_click':
+      return {
+        category: 'frustration',
+        title: `Error after ${tap} on ${targetText(fields)}`,
+        detail: fields.event_data_message,
+      };
+    case 'form_invalid':
+      return {
+        category: 'frustration',
+        title: `Form error: ${fields.event_data_label || fields.event_data_field || 'a field'}`,
+        detail: [fields.event_data_reason, path].filter(Boolean).join(' · ') || undefined,
+      };
+    case 'page_exit':
+      return { category: 'navigation', title: `Left ${path ?? 'the page'}`, detail: exitDetail(fields) };
+    default:
+      return undefined;
+  }
+}
+
+/** `after 0:42 · saw 35 % · last tap “Buy now” · last field email (empty)` */
+export function exitDetail(fields: Record<string, string>): string {
+  const parts: string[] = [];
+  const timeMs = Number(fields.event_data_time_ms);
+  if (Number.isFinite(timeMs) && fields.event_data_time_ms) {
+    const seconds = Math.round(timeMs / 1000);
+    parts.push(`after ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);
+  }
+  if (fields.event_data_scroll_depth) {
+    parts.push(`saw ${fields.event_data_scroll_depth} % of the page`);
+  }
+  if (fields.event_data_last_click) {
+    parts.push(`last ${tapWord(fields)} “${fields.event_data_last_click}”`);
+  }
+  if (fields.event_data_last_field) {
+    const filled = fields.event_data_last_field_filled === '1' ? 'filled' : 'empty';
+    parts.push(`last field ${fields.event_data_last_field} (${filled})`);
+  }
+  return capitalise(parts.join(' · '));
+}
+
 /**
  * Turn one Faro log line into a user-journey entry, or undefined when the
  * line is not shown (replay payloads, resource timings, other sessions).
@@ -160,6 +245,10 @@ export function toJourneyEvent(tsNs: string, line: string, sessionId: string): J
       if (NETWORK_EVENTS[name]) {
         const network = networkEvent(fields, NETWORK_EVENTS[name]);
         return { ...base, category: 'network', title: network.title, detail: network.detail };
+      }
+      const frustration = frustrationEvent(name, fields);
+      if (frustration) {
+        return { ...base, ...frustration };
       }
       if (NAVIGATION_EVENTS.has(name)) {
         const to = first(fields, 'event_data_to', 'view_name', 'page_url');

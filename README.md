@@ -6,9 +6,10 @@ and stored in **your own Loki**. It follows the user experience of Grafana Cloud
 Session Replay (`grafana-sessionreplay-app`), which only works with data sent to the
 Grafana Cloud collector.
 
-- **Sessions**: every recorded session in a time range. Filter by app and
-  environment, search by session, user, page or browser, and sort by start, page
-  loads or errors.
+- **Sessions**: every recorded session in a time range. Filter by app,
+  environment, device, furthest funnel step (_Stopped at: Checkout_) and _With
+  problems only_; search by session, user, page or browser, and sort by start,
+  page loads, errors, funnel step or frustration (dead/rage/error taps, form errors).
 - **Replay viewer** at `/a/ajaska-sessionreplay-app/app/<app_name>/session/<session_id>?t=<ms>`
   (the same shape as Grafana Cloud's). Controls:
   - elapsed and total time, play/pause, skip ±10 s, timeline with error and
@@ -16,6 +17,14 @@ Grafana Cloud collector.
   - playback speed, skip inactivity, **Share** (copies a link to the current
     moment) and fullscreen;
   - a header with the title and URL of the page the user was on.
+- **Insights** beside the player (first tab when the session had a problem): the
+  funnel the visitor got through, then every problem in time order with its
+  severity — dead, rage and error taps, form errors, blocked pay presses, JS
+  errors, failed requests, slow web vitals, pinch zooms and page exits (time,
+  scroll depth, last tap and field). A click plays from just before it; the tap
+  is ringed on the replayed page and problems are diamonds on the timeline.
+  Taps come from the page's detector (LP Shop: `dead_click`, `rage_click`,
+  `error_click`, `form_invalid`, `page_exit`), else from the recording itself.
 - **User Journey** beside the player:
   - a **Journey** tab (navigations, custom events, web vitals, logs, errors; filters
     _Navigation_ / _Custom_ / _Errors_) and a **Network** tab (`Fetch request (POST 200)`);
