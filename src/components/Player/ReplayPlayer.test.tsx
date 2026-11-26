@@ -14,6 +14,8 @@ class MockReplayer {
   readonly sized: Record<string, Record<string, string>> = { iframe: {}, tail: {} };
   readonly wrapper = {
     style: {} as Record<string, string>,
+    children: [] as HTMLElement[],
+    appendChild: (child: HTMLElement) => this.wrapper.children.push(child),
     querySelector: (selector: string) =>
       selector === 'canvas.replayer-mouse-tail'
         ? {
@@ -110,7 +112,7 @@ import { decodeReplayLines, ReplayTimeline } from '../../lib/replayEvents';
 import { REPLAY_STYLE_RULES } from '../../lib/replayStyles';
 import type { ZoomSample } from '../../lib/viewportZoom';
 import { testIds } from '../testIds';
-import { FOCUS_DEBOUNCE_MS, ReplayPlayer } from './ReplayPlayer';
+import { FOCUS_DEBOUNCE_MS, ReplayPlayer, tapAt, TAP_SHOWN_MS, type TapMark } from './ReplayPlayer';
 
 global.ResizeObserver = class {
   observe() {}
@@ -501,6 +503,56 @@ describe('ReplayPlayer, edge cases', () => {
     act(() => clock.update({ offsetMs: MIN + 1000 }));
     expect(style.transform).toBe('scale(1)');
     jest.restoreAllMocks();
+  });
+
+  it('rings a problem tap on the page while it plays, and marks problems on the timeline', () => {
+    const taps: TapMark[] = [
+      { timeMs: MIN, x: 120, y: 340, severity: 'high', title: 'Dead tap on “Buy now” (button)' },
+      { timeMs: 2 * MIN, x: 10, y: 20, severity: 'medium', title: 'Rage tap' },
+    ];
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    const clock = new PlayerClock();
+    render(
+      <ReplayPlayer
+        track={replay.tracks[0]}
+        clock={clock}
+        taps={taps}
+        markers={[{ offsetMs: MIN, kind: 'frustration', title: 'Dead tap on “Buy now” (button)' }]}
+      />
+    );
+    const [replayer] = MockReplayer.instances;
+    const [ring] = replayer.wrapper.children;
+    expect(screen.getByRole('button', { name: 'Dead tap on “Buy now” (button)' })).toBeInTheDocument();
+
+    act(() => clock.update({ startTimeMs: 0, offsetMs: MIN - 10 }));
+    expect(ring.hidden).toBe(true);
+    act(() => clock.update({ offsetMs: MIN + 500 }));
+    expect(ring.hidden).toBe(false);
+    expect(ring.style.left).toBe('120px');
+    expect(ring.style.top).toBe('340px');
+    expect(ring.dataset.severity).toBe('high');
+    expect(ring.title).toBe('Dead tap on “Buy now” (button)');
+    // Same tap, a frame later: nothing changes.
+    act(() => clock.update({ offsetMs: MIN + 600 }));
+    expect(ring.style.left).toBe('120px');
+    act(() => clock.update({ offsetMs: MIN + TAP_SHOWN_MS + 1 }));
+    expect(ring.hidden).toBe(true);
+    act(() => clock.update({ offsetMs: 2 * MIN }));
+    expect(ring.style.left).toBe('10px');
+    expect(ring.dataset.severity).toBe('medium');
+  });
+
+  it('finds the tap to ring at a time', () => {
+    const taps: TapMark[] = [
+      { timeMs: 1000, x: 1, y: 1, severity: 'high', title: 'a' },
+      { timeMs: 2000, x: 2, y: 2, severity: 'low', title: 'b' },
+    ];
+    expect(tapAt(taps, 999)).toBeUndefined();
+    expect(tapAt(taps, 1500)?.title).toBe('a');
+    expect(tapAt(taps, 2500)?.title).toBe('b');
+    expect(tapAt(taps, 2000 + TAP_SHOWN_MS + 1)).toBeUndefined();
+    expect(tapAt([], 5)).toBeUndefined();
   });
 
   it('offers the zoom only for recordings with zoom data', () => {

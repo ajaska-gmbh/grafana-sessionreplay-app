@@ -8,6 +8,8 @@ export const testIds = {
     container: 'data-testid sessions-container',
     search: 'data-testid sessions-search',
     row: 'data-testid sessions-row',
+    outcome: 'data-testid sessions-outcome',
+    problems: 'data-testid sessions-problems',
   },
   replay: {
     container: 'data-testid replay-container',
@@ -37,6 +39,12 @@ export const testIds = {
     audioPlayhead: 'data-testid player-audio-playhead',
     callAudio: 'data-testid player-call-audio',
     callAudioRow: (track: string) => `data-testid player-call-audio-${track}`,
+  },
+  insights: {
+    container: 'data-testid insights-container',
+    row: 'data-testid insights-row',
+    chip: 'data-testid insights-chip',
+    step: 'data-testid insights-step',
   },
   journey: {
     container: 'data-testid journey-container',
