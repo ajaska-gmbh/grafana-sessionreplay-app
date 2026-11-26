@@ -4,6 +4,8 @@ import {
   isPinchZoom,
   LayoutViewport,
   PINCH_ASPECT_TOLERANCE,
+  StageFrame,
+  tallestHeights,
 } from './layoutViewport';
 
 const incremental = (data: Record<string, unknown>) => ({ type: 3, timestamp: 1, data }) as never;
@@ -110,5 +112,111 @@ describe('LayoutViewport', () => {
 
     expect(new LayoutViewport(touch).next(size(274, 506))).toEqual(size(274, 506));
     expect(touch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Recorded sizes of session hcXLzAtwTW (lp-shop-storefront, iPhone, iOS 18.7,
+ * 2026-11-26): the URL bar showing and hiding while the buyer scrolled the checkout.
+ */
+const IPHONE_SCROLL = [775, 783, 805, 776, 810, 790, 773, 775, 786, 809, 775, 788, 815, 808].map((height) =>
+  size(430, height)
+);
+
+describe('StageFrame', () => {
+  it('keeps the tallest height of a touch recording while the width stays', () => {
+    const frame = new StageFrame(() => true);
+    const frames = IPHONE_SCROLL.map((recorded) => frame.next(recorded));
+
+    expect(frames.slice(0, 3)).toEqual([size(430, 775), size(430, 783), size(430, 805)]);
+    // The URL bar hid and showed again: the page stays where it is.
+    expect(frames[3]).toEqual(size(430, 805));
+    expect(frames.slice(4, 12)).toEqual(Array(8).fill(size(430, 810)));
+    expect(frames.at(-1)).toEqual(size(430, 815));
+  });
+
+  it('starts at the tallest height recorded at the width, so the first URL bar change does not move the page', () => {
+    const tallest = new Map([[430, 815]]);
+    const frame = new StageFrame(
+      () => true,
+      (width) => tallest.get(width)
+    );
+
+    expect(IPHONE_SCROLL.map((recorded) => frame.next(recorded))).toEqual(
+      Array(IPHONE_SCROLL.length).fill(size(430, 815))
+    );
+    // A zoomed viewport: the tallest recorded at its width, scaled to what is shown.
+    tallest.set(576, 1229);
+    expect(frame.next(size(412, 839), size(576, 1173))).toEqual(size(412, 879));
+  });
+
+  it('gives a new width its own frame (orientation change)', () => {
+    const frame = new StageFrame(() => true);
+    frame.next(size(430, 815));
+
+    expect(frame.next(size(932, 390))).toEqual(size(932, 390));
+    expect(frame.next(size(430, 775))).toEqual(size(430, 775));
+  });
+
+  it('fits desktop recordings to every recorded size', () => {
+    const tallest = jest.fn(() => 2000);
+    const frame = new StageFrame(() => false, tallest);
+
+    expect(frame.next(size(1440, 900))).toEqual(size(1440, 900));
+    expect(frame.next(size(1200, 900))).toEqual(size(1200, 900));
+    expect(frame.next(size(1200, 700))).toEqual(size(1200, 700));
+    expect(tallest).not.toHaveBeenCalled();
+  });
+});
+
+describe('LayoutViewport, page loads', () => {
+  it('takes a page load as a new page, never a pinch zoom of the last one', () => {
+    const viewport = new LayoutViewport(() => true);
+    viewport.pageLoad(size(610, 1119));
+
+    expect(viewport.pageLoad(size(411, 754))).toEqual(size(411, 754));
+    // A resize of the new page is measured against it.
+    expect(viewport.next(size(206, 377))).toEqual(size(411, 752));
+  });
+
+  it('lays out a page that opened zoomed out at its layout, also after height changes and turning back', () => {
+    const viewport = new LayoutViewport(() => true);
+
+    expect(viewport.pageLoad(size(1060, 1259), size(800, 950))).toEqual(size(800, 950));
+    expect(viewport.next(size(1060, 1300))).toEqual(size(800, 981));
+    // Zoomed in to the layout width: the page as laid out.
+    expect(viewport.next(size(800, 950))).toEqual(size(800, 950));
+    // Turned to landscape, and back to the zoomed-out portrait.
+    expect(viewport.next(size(1080, 790))).toEqual(size(1080, 790));
+    expect(viewport.next(size(1060, 1259))).toEqual(size(800, 950));
+    // The next page starts afresh.
+    expect(viewport.pageLoad(size(1060, 1259))).toEqual(size(1060, 1259));
+    expect(viewport.next(size(1060, 1300))).toEqual(size(1060, 1300));
+  });
+
+  it('ignores a layout that is not narrower than the recorded viewport', () => {
+    const viewport = new LayoutViewport(() => true);
+    expect(viewport.pageLoad(size(412, 839), size(412, 839))).toEqual(size(412, 839));
+    expect(viewport.pageLoad(size(412, 839), size(0, 0))).toEqual(size(412, 839));
+    expect(viewport.pageLoad(size(412, 839), size(600, 900))).toEqual(size(412, 839));
+  });
+});
+
+describe('tallestHeights', () => {
+  const meta = (width: number, height: number) =>
+    ({ type: 4, timestamp: 1, data: { href: '', width, height } }) as never;
+  const resize = (width: number, height: number) => incremental({ source: 4, width, height });
+
+  it('finds the tallest Meta or ViewportResize height per width over the chunks', () => {
+    const events = [meta(430, 775), resize(430, 815), resize(430, 733), resize(932, 390), mouseMove, touchMove];
+    const tallest = tallestHeights([{ events }, { events: [resize(932, 402), incremental({ source: 4 })] }]);
+
+    expect([...tallest.entries()]).toEqual([
+      [430, 815],
+      [932, 402],
+    ]);
+    // Each events list is scanned once.
+    events.push(resize(430, 999));
+    expect(tallestHeights([{ events }]).get(430)).toBe(815);
   });
 });

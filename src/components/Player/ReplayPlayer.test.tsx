@@ -10,17 +10,22 @@ class MockReplayer {
   readonly calls: string[] = [];
   readonly added: Array<{ timestamp: number }> = [];
   readonly handlers = new Map<string, Array<(payload?: unknown) => void>>();
-  /** Attributes the player sets on the iframe and the mouse tail (rrweb sets them before it on every resize). */
+  /** The iframe's and the mouse tail's size attributes: rrweb sets them to every recorded viewport, then the player may change them. */
   readonly sized: Record<string, Record<string, string>> = { iframe: {}, tail: {} };
   readonly wrapper = {
     style: {} as Record<string, string>,
     querySelector: (selector: string) =>
       selector === 'canvas.replayer-mouse-tail'
-        ? { setAttribute: (name: string, value: string) => (this.sized.tail[name] = value) }
+        ? {
+            getAttribute: (name: string) => this.sized.tail[name] ?? null,
+            setAttribute: (name: string, value: string) => (this.sized.tail[name] = value),
+          }
         : null,
   };
   readonly iframe = {
     contentDocument: null,
+    contentWindow: { scrollTo: jest.fn() },
+    getAttribute: (name: string) => this.sized.iframe[name] ?? null,
     setAttribute: (name: string, value: string) => (this.sized.iframe[name] = value),
   };
   current = 0;
@@ -38,6 +43,24 @@ class MockReplayer {
   }
   emit(event: string, payload?: unknown) {
     this.handlers.get(event)?.forEach((handler) => handler(payload));
+  }
+  /** Applies an event as rrweb does: a viewport size resizes the iframe and tells the resize listeners, then "event-cast". */
+  cast(event: { type: number; timestamp: number; data: Record<string, unknown> }) {
+    const { width, height, source } = event.data as { width?: number; height?: number; source?: number };
+    if (event.type === 4 || (event.type === 3 && source === 4)) {
+      this.sized.iframe = { width: String(width), height: String(height) };
+      this.sized.tail = { width: String(width), height: String(height) };
+      this.emit('resize', { width, height });
+    }
+    this.emit('event-cast', event);
+  }
+  /** A page load at this size. */
+  meta(width: number, height: number, timestamp = 0) {
+    this.cast({ type: 4, timestamp, data: { href: 'https://x/', width, height } });
+  }
+  /** A resize (rrweb's ViewportResize) to this size. */
+  resize(width: number, height: number, timestamp = 0) {
+    this.cast({ type: 3, timestamp, data: { source: 4, width, height } });
   }
   play(offset = this.current) {
     this.current = offset;
@@ -84,6 +107,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { chunksOf, indexFromLines, linesOf, SESSION_ID } from '../../lib/fixtures';
 import { PlayerClock } from '../../lib/playerClock';
 import { decodeReplayLines, ReplayTimeline } from '../../lib/replayEvents';
+import { REPLAY_STYLE_RULES } from '../../lib/replayStyles';
 import type { ZoomSample } from '../../lib/viewportZoom';
 import { testIds } from '../testIds';
 import { FOCUS_DEBOUNCE_MS, ReplayPlayer } from './ReplayPlayer';
@@ -319,18 +343,118 @@ describe('ReplayPlayer, edge cases', () => {
     render(<ReplayPlayer track={replay.tracks[0]} />);
     const [replayer] = MockReplayer.instances;
 
-    act(() => replayer.emit('resize', { width: 320, height: 582 }));
-    expect(replayer.sized.iframe).toEqual({});
+    act(() => replayer.meta(320, 582));
+    expect(replayer.sized.iframe).toEqual({ width: '320', height: '582' });
 
     // Zoomed in: rrweb sized the iframe 274 px wide; the page stays laid out at 320.
-    act(() => replayer.emit('resize', { width: 274, height: 506 }));
+    act(() => replayer.resize(274, 506));
     expect(replayer.sized.iframe).toEqual({ width: '320', height: '591' });
     expect(replayer.sized.tail).toEqual({ width: '320', height: '591' });
+    // rrweb's resize on creation (a timer) sizes the iframe again: the player keeps its size.
+    act(() => replayer.emit('resize', { width: 274, height: 506 }));
+    expect(replayer.sized.iframe).toEqual({ width: '320', height: '591' });
 
     // Turned to landscape: a real resize.
-    replayer.sized.iframe = {};
-    act(() => replayer.emit('resize', { width: 640, height: 300 }));
-    expect(replayer.sized.iframe).toEqual({});
+    act(() => replayer.resize(640, 300));
+    expect(replayer.sized.iframe).toEqual({ width: '640', height: '300' });
+
+    // A new page at the narrower size is a page, not a zoom.
+    act(() => replayer.meta(274, 506));
+    expect(replayer.sized.iframe).toEqual({ width: '274', height: '506' });
+  });
+
+  it('keeps a phone recording steady while the URL bar shows and hides', () => {
+    jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000);
+    jest.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(408);
+    const touchLines = linesOf([
+      { event: meta(0) as Event, gen: 0 },
+      { event: snapshot(1) as Event, gen: 0 },
+      { event: { type: 3, timestamp: 2, data: { source: 2, type: 7, id: 1, x: 1, y: 1 } } as Event, gen: 0 },
+      { event: incremental(MIN) as Event, gen: 0 },
+    ]);
+    const replay = new ReplayTimeline(indexFromLines(touchLines));
+    replay.addChunk('rec1:0', chunksOf(touchLines).get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} />);
+    const [replayer] = MockReplayer.instances;
+    const style = replayer.wrapper.style;
+
+    act(() => replayer.meta(430, 816));
+    const steady = { transform: style.transform, left: style.left, top: style.top };
+    expect(steady).toEqual({ transform: 'scale(0.5)', left: '392.5px', top: '0px' });
+
+    // iOS Safari: the URL bar shows (shorter viewport) and hides again while the buyer scrolls.
+    for (const height of [775, 790, 816, 775]) {
+      act(() => replayer.resize(430, height));
+      expect({ transform: style.transform, left: style.left, top: style.top }).toEqual(steady);
+    }
+    jest.restoreAllMocks();
+  });
+
+  it('styles the replayed page: card fields as stars, no scroll anchoring', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} />);
+
+    expect(MockReplayer.instances[0].config.insertStyleRules).toEqual(REPLAY_STYLE_RULES);
+  });
+
+  it('lays out a page that opened zoomed out at its real width, also after URL bar changes', () => {
+    // The page was wider than the 412 px screen: the browser showed 576 px of it; the page sent its layout size.
+    const zoom: ZoomSample[] = [
+      {
+        timeMs: 10,
+        scale: 1,
+        offsetLeft: 0,
+        offsetTop: 0,
+        width: 412,
+        height: 839,
+        layoutWidth: 412,
+        layoutHeight: 839,
+      },
+    ];
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} zoom={zoom} />);
+    const [replayer] = MockReplayer.instances;
+
+    act(() => replayer.meta(576, 1173, 0));
+    expect(replayer.sized.iframe).toEqual({ width: '412', height: '839' });
+    act(() => replayer.resize(576, 1229, 20));
+    expect(replayer.sized.iframe).toEqual({ width: '412', height: '879' });
+    // Turned to landscape (it fits there), and back.
+    act(() => replayer.resize(839, 412, 30));
+    expect(replayer.sized.iframe).toEqual({ width: '839', height: '412' });
+    act(() => replayer.resize(576, 1173, 40));
+    expect(replayer.sized.iframe).toEqual({ width: '412', height: '839' });
+  });
+
+  it('starts a page reached by a seek at its own scroll position, unless it was scrolled since', () => {
+    const replay = new ReplayTimeline(indexFromLines(lines));
+    replay.addChunk('rec1:0', all.get('rec1:0')!);
+    render(<ReplayPlayer track={replay.tracks[0]} />);
+    const [replayer] = MockReplayer.instances;
+    const snapshotAt = (top: number) => ({
+      type: 2,
+      timestamp: 1,
+      data: { node: { id: 1 }, initialOffset: { left: 0, top } },
+    });
+
+    act(() => {
+      replayer.cast(snapshotAt(120));
+      replayer.emit('flush');
+    });
+    expect(replayer.iframe.contentWindow.scrollTo).toHaveBeenLastCalledWith(0, 120);
+
+    replayer.iframe.contentWindow.scrollTo.mockClear();
+    act(() => {
+      replayer.cast(snapshotAt(0));
+      replayer.cast({ type: 3, timestamp: 2, data: { source: 3, id: 7, x: 0, y: 50 } });
+      replayer.cast({ type: 3, timestamp: 3, data: { source: 3, id: 1, x: 0, y: 400 } });
+      replayer.emit('flush');
+      // A flush without a page load in between leaves the scroll alone.
+      replayer.emit('flush');
+    });
+    expect(replayer.iframe.contentWindow.scrollTo).not.toHaveBeenCalled();
   });
 
   it("shows the visitor's zoom over the page at its layout width, and turns it off on request", () => {
@@ -346,7 +470,7 @@ describe('ReplayPlayer, edge cases', () => {
       layoutWidth: 320,
       layoutHeight: 582,
     });
-    const zoom = [zoomed(MIN, 2, 100, 200), zoomed(MIN + 1000, 1, 0, 0)];
+    const zoom = [zoomed(MIN, 2, 100, 200), zoomed(MIN + 300, 1, 0, 0)];
     const replay = new ReplayTimeline(indexFromLines(lines));
     replay.addChunk('rec1:0', all.get('rec1:0')!);
     const clock = new PlayerClock();
@@ -354,18 +478,18 @@ describe('ReplayPlayer, edge cases', () => {
     const [replayer] = MockReplayer.instances;
     const style = replayer.wrapper.style;
 
-    act(() => replayer.emit('resize', { width: 320, height: 582 }));
+    act(() => replayer.meta(320, 582));
     expect(style.transform).toBe('scale(1)');
     expect(style.clipPath).toBe('');
 
     // Pinched to 2x: rrweb resizes to the visible 160 px; the page stays 320 px wide, the visible area fills the stage.
     act(() => clock.update({ startTimeMs: 0, offsetMs: MIN }));
-    act(() => replayer.emit('resize', { width: 160, height: 291 }));
+    act(() => replayer.resize(160, 291));
     expect(replayer.sized.iframe).toEqual({ width: '320', height: '582' });
     expect(style.transform).toBe('scale(2) translate(-100px, -200px)');
     expect(style.clipPath).toBe('inset(200px 60px 91px 100px)');
     // Halfway back to 1x.
-    act(() => clock.update({ offsetMs: MIN + 500 }));
+    act(() => clock.update({ offsetMs: MIN + 150 }));
     expect(style.transform).toBe('scale(1.5) translate(-50px, -100px)');
 
     fireEvent.click(screen.getByTestId(testIds.player.zoom));
@@ -453,7 +577,7 @@ describe('ReplayPlayer, live', () => {
     ];
     render(<ReplayPlayer track={replay.tracks[0]} live clock={clock} zoom={zoom} />);
     const [replayer] = MockReplayer.instances;
-    act(() => replayer.emit('resize', { width: 2, height: 2 }));
+    act(() => replayer.meta(2, 2));
     act(() => clock.update({ startTimeMs: 25 * MIN, offsetMs: 10 }));
     expect(replayer.wrapper.style.transform).toMatch(/^scale\([\d.e-]+\) translate\(0px, 0px\)$/);
     expect(screen.getByTestId(testIds.player.zoom)).toBeInTheDocument();

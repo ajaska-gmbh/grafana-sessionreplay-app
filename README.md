@@ -81,6 +81,34 @@ Live mode polls the session from the end of the index on (new checkouts,
 reloads and tabs included) and starts with the newest chunk. Recordings from
 Faro replay < 2.13 (no recording id) cannot be indexed and are not shown.
 
+**Phones and tablets.** rrweb records the viewport as `innerWidth/innerHeight`,
+which on phones is the visible area. The player turns that back into what the
+visitor saw (`src/lib/layoutViewport.ts`, `src/lib/viewportZoom.ts`):
+
+- Pinch zooms replay at the page's layout width, with the visitor's zoom drawn
+  on top when the page sends `viewport_zoom` samples.
+- A page that opened zoomed out (content wider than the screen) is laid out at
+  its real width from its first zoom sample, also after the URL bar changes or
+  the device turns and back.
+- Every page load starts afresh; a narrower new page is never taken for a zoom.
+- The URL bar and keyboard change only the height (iOS Safari: several times a
+  second while scrolling): touch recordings are fitted to the tallest height
+  recorded at that width, so the page keeps its size and place.
+- Scroll anchoring is off in the replayed page: the recording already holds
+  where the visitor's browser scrolled to.
+- A seek into a later page load starts at that page's own scroll position.
+
+`npm run bench` checks all of this against recorded visits on emulated phones
+and tablets and against real sessions (`bench/README.md`).
+
+**Text for what the recording cannot see.** An element with
+`data-replay-text="…"` gets that text drawn over it in the replay only (style
+rules injected into the replayed page, `src/lib/replayText.ts`).
+`data-replay-state="invalid"` shows it in red, `data-replay-kind="badge"` as a
+small label in the box's corner. LP Shop's checkout uses it for Stripe's card
+fields, whose cross-origin frames are never recorded: the replay shows stars
+(`Visa •••• •••• •••• ••••`) for what the buyer did, never the card data.
+
 Playback uses `@grafana/rrweb`, the same rrweb fork the recorder uses. Keep it on the
 version that `@grafana/faro-instrumentation-replay` depends on.
 

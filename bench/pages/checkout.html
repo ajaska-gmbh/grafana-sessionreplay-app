@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bench checkout</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          16px/1.4 -apple-system,
+          system-ui,
+          sans-serif;
+      }
+      header {
+        height: 56px;
+        padding: 0 16px;
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid #ddd;
+      }
+      .columns {
+        display: grid;
+        gap: 16px;
+        padding: 16px;
+        grid-template-columns: 1fr;
+      }
+      @media (min-width: 768px) {
+        .columns {
+          grid-template-columns: 3fr 2fr;
+        }
+      }
+      section {
+        min-height: 900px;
+        border-radius: 12px;
+        background: #f3f4f6;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      input {
+        height: 48px;
+        border: 1px solid #9ca3af;
+        border-radius: 8px;
+        padding: 0 12px;
+        font-size: 16px;
+      }
+      .pay {
+        position: sticky;
+        bottom: 0;
+        height: 56px;
+        background: #2563eb;
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    </style>
+  </head>
+  <body>
+    <header data-bench="header">Checkout</header>
+    <div class="columns">
+      <section data-bench="form">
+        <input data-bench="email" type="email" placeholder="Email" />
+        <input data-bench="address" type="text" placeholder="Address" />
+      </section>
+      <section data-bench="summary">Order summary</section>
+    </div>
+    <div class="pay" data-bench="pay">Pay now</div>
+    <script src="/dist/recorder.js"></script>
+  </body>
+</html>
