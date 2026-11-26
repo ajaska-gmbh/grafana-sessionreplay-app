@@ -12,6 +12,7 @@ import type { PayloadBuckets } from '../lib/sessionBucket';
 import { loadRange, REPLAY_STARTED_EVENT, sessionRange, summariseSessions, type SessionSummary } from '../lib/sessions';
 import { SessionStore } from '../lib/sessionStore';
 import { journeyQuery } from '../lib/journeyQuery';
+import { errorText } from '../lib/errors';
 import { audioLevelsQuery, type AudioLevelWindow } from '../lib/audioLevels';
 
 /** How often live mode asks Loki for new events. */
@@ -102,12 +103,7 @@ export async function findSessionAround(
   return summariseSessions(lines).find((candidate) => candidate.sessionId === sessionId);
 }
 
-function errorMessage(error: unknown): string {
-  return (
-    (error as { data?: { message?: string } })?.data?.message ??
-    (error instanceof Error ? error.message : String(error))
-  );
-}
+const errorMessage = errorText;
 
 /**
  * Load one session's replay and journey; with `live`, keep polling Loki for

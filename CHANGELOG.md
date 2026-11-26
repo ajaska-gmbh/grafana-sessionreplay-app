@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- Errors say what went wrong instead of "[object Object]" (e.g. `upstream timed out (504)`, or that the request did not reach Grafana), in the replay, the session list, agents and call audio. Loki queries are tried again after a transient failure (Grafana restarting, 502/503/504/429, no response): after 0.5 s and 2 s, so one blip no longer fails the whole session.
+
 ## 0.10.0
 
 - **Insights** (#29): where the visitor got stuck, first. The replay opens on an Insights tab (when the session had a problem): the funnel the visitor got through (viewed → cart → checkout → payment info → purchase, a blocked pay press in red), then every problem in time order with a severity dot — dead taps (on a button: high; on something not clickable the visitor expected to be: medium), rage taps, taps followed by a JS error, form errors, blocked pay presses, JS errors, failed requests (4xx/5xx, network), slow and sluggish web vitals, pinch zooms (text or buttons too small?) and where each page was left (time, how much of the page was seen, last tap, last field and whether it was filled). Chips count and filter by kind; a click plays from 1.5 s before the moment.
