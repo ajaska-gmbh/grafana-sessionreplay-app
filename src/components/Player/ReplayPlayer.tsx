@@ -18,24 +18,38 @@ import {
 } from '@grafana/ui';
 import { toTimelineSegments, type AudioLevelWindow } from '../../lib/audioLevels';
 import { formatClock, formatWallClock, wallClockOffset } from '../../lib/format';
-import { chunksHaveTouchInput, LayoutViewport, type Viewport } from '../../lib/layoutViewport';
+import {
+  chunksHaveTouchInput,
+  LayoutViewport,
+  StageFrame,
+  tallestHeights,
+  type Viewport,
+} from '../../lib/layoutViewport';
 import { liveStartIndex, pageAt } from '../../lib/playerEvents';
 import type { ReplayChunk, ReplayTrack } from '../../lib/replayEvents';
 import {
   afterRun,
   chunkIndexAt,
+  pauseOffset,
   readyAt,
   withDependencies,
   trackLength,
   TrackFeed,
   unloadedSpans,
 } from '../../lib/replayFeed';
+import { REPLAY_STYLE_RULES } from '../../lib/replayStyles';
 import { PlayerClock, useClockEffect, useClockValue, type ClockState } from '../../lib/playerClock';
-import { wrapperStyle, zoomAt, type Zoom, type ZoomSample } from '../../lib/viewportZoom';
+import { wrapperStyle, zoomAt, zoomedOutLayout, type Zoom, type ZoomSample } from '../../lib/viewportZoom';
 import { testIds } from '../testIds';
 import { AudioLevelTimeline } from './AudioLevelTimeline';
 
 export const SPEEDS = [0.5, 1, 2, 4, 8];
+/** rrweb's EventType.FullSnapshot, Meta and IncrementalSnapshot, and IncrementalSource.Scroll and ViewportResize. */
+const RRWEB_FULL_SNAPSHOT = 2;
+const RRWEB_META = 4;
+const RRWEB_INCREMENTAL = 3;
+const SOURCE_SCROLL = 3;
+const SOURCE_VIEWPORT_RESIZE = 4;
 const SKIP_MS = 10_000;
 /** Smallest height of the replayed page: below it the stage stops shrinking and the player grows instead. */
 const STAGE_MIN_HEIGHT = 160;
@@ -161,6 +175,8 @@ export function ReplayPlayer({
   const replayerRef = useRef<Replayer | null>(null);
   const addedRef = useRef<WeakSet<eventWithTime>>(new WeakSet());
   const viewportRef = useRef<{ width: number; height: number } | null>(null);
+  /** The box the page is fitted into: steadier than the viewport on phones (see StageFrame). */
+  const frameSizeRef = useRef<{ width: number; height: number } | null>(null);
   /** The visitor's zoom at the playhead, shown over the page. */
   const zoomRef = useRef<Zoom | undefined>(undefined);
   const zoomSamplesRef = useRef(zoom);
@@ -266,14 +282,15 @@ export function ReplayPlayer({
     if (!replayer || !stage || !viewport) {
       return;
     }
-    const scale = Math.min(stage.clientWidth / viewport.width, stage.clientHeight / viewport.height, 1);
+    const frame = frameSizeRef.current ?? viewport;
+    const scale = Math.min(stage.clientWidth / frame.width, stage.clientHeight / frame.height, 1);
     const { transform, clipPath } = wrapperStyle(scale, viewport, zoomRef.current);
     replayer.wrapper.style.transform = transform;
     replayer.wrapper.style.clipPath = clipPath;
     replayer.wrapper.style.transformOrigin = 'top left';
     replayer.wrapper.style.position = 'absolute';
-    replayer.wrapper.style.left = `${Math.max(0, (stage.clientWidth - viewport.width * scale) / 2)}px`;
-    replayer.wrapper.style.top = `${Math.max(0, (stage.clientHeight - viewport.height * scale) / 2)}px`;
+    replayer.wrapper.style.left = `${Math.max(0, (stage.clientWidth - frame.width * scale) / 2)}px`;
+    replayer.wrapper.style.top = `${Math.max(0, (stage.clientHeight - frame.height * scale) / 2)}px`;
   }, []);
 
   const syncTime = useCallback(() => {
@@ -424,23 +441,91 @@ export function ReplayPlayer({
   const attach = useCallback(
     (replayer: Replayer) => {
       replayerRef.current = replayer;
-      // Pinch zooms are recorded as resizes to the zoomed size: replay them at
-      // the layout viewport (see LayoutViewport). rrweb's own handler has sized
-      // the iframe already; this one runs after it.
-      const layoutViewport = new LayoutViewport(
-        () => zoomSamplesRef.current.length > 0 || chunksHaveTouchInput(trackRef.current.chunks)
-      );
-      replayer.on('resize', (dimension) => {
-        const recorded = dimension as Viewport;
-        const shown = layoutViewport.next(recorded);
-        if (shown.width !== recorded.width || shown.height !== recorded.height) {
-          for (const element of [replayer.iframe, replayer.wrapper.querySelector('canvas.replayer-mouse-tail')]) {
-            element?.setAttribute('width', String(shown.width));
-            element?.setAttribute('height', String(shown.height));
+      // What the replay lays the page out at (see LayoutViewport): pinch zooms
+      // are recorded as resizes to the zoomed size and replayed at the layout
+      // viewport; a page load starts afresh (at its real width when it opened
+      // zoomed out). rrweb sends a page load and a resize alike to its resize
+      // listeners, so the decision is made once it says which event it cast.
+      const touch = () => zoomSamplesRef.current.length > 0 || chunksHaveTouchInput(trackRef.current.chunks);
+      const layoutViewport = new LayoutViewport(touch);
+      const stageFrame = new StageFrame(touch, (width) => tallestHeights(trackRef.current.chunks).get(width));
+      let shown: Viewport | undefined;
+      let recordedSize: Viewport | undefined;
+      const apply = () => {
+        if (!shown) {
+          return;
+        }
+        // rrweb sizes its iframe and mouse tail to every recorded viewport; this runs after it.
+        for (const element of [replayer.iframe, replayer.wrapper.querySelector('canvas.replayer-mouse-tail')]) {
+          if (element && element.getAttribute('width') !== String(shown.width)) {
+            element.setAttribute('width', String(shown.width));
+          }
+          if (element && element.getAttribute('height') !== String(shown.height)) {
+            element.setAttribute('height', String(shown.height));
           }
         }
         viewportRef.current = shown;
+        frameSizeRef.current = stageFrame.next(shown, recordedSize);
         rescale();
+      };
+      replayer.on('resize', (dimension) => {
+        // Before the first cast (rrweb sizes the first page on creation) the size is a page load.
+        if (!shown) {
+          recordedSize = dimension as Viewport;
+          shown = layoutViewport.pageLoad(recordedSize);
+        }
+        apply();
+      });
+      // A page load replayed into the same iframe keeps the last page's scroll
+      // position when reached by a seek (clamped to the new page): the new
+      // page's own start position is set again once rrweb applied the seek,
+      // unless a recorded scroll of the page came after it.
+      let startScroll: { id: number; left: number; top: number } | null = null;
+      replayer.on('event-cast', (cast) => {
+        const event = cast as eventWithTime;
+        if (event.type === RRWEB_FULL_SNAPSHOT) {
+          const { node, initialOffset } = event.data as {
+            node: { id: number };
+            initialOffset: { left: number; top: number };
+          };
+          startScroll = { id: node.id, left: initialOffset.left, top: initialOffset.top };
+        } else if (
+          event.type === RRWEB_INCREMENTAL &&
+          (event.data as { source?: number; id?: number }).source === SOURCE_SCROLL
+        ) {
+          if ((event.data as { id?: number }).id === startScroll?.id) {
+            startScroll = null;
+          }
+        }
+      });
+      replayer.on('flush', () => {
+        if (startScroll) {
+          replayer.iframe.contentWindow?.scrollTo(startScroll.left, startScroll.top);
+        }
+        startScroll = null;
+      });
+      replayer.on('event-cast', (cast) => {
+        const event = cast as eventWithTime;
+        const data = event.data as { source?: number; width?: number; height?: number };
+        if (typeof data.width !== 'number' || typeof data.height !== 'number') {
+          return;
+        }
+        const recorded = { width: data.width, height: data.height };
+        recordedSize = recorded;
+        if (event.type === RRWEB_META) {
+          const pages = trackRef.current.pages;
+          const next = pages.find((page) => page.timestamp > event.timestamp)?.timestamp;
+          const previous = pages.filter((page) => page.timestamp < event.timestamp).at(-1)?.timestamp;
+          shown = layoutViewport.pageLoad(
+            recorded,
+            zoomedOutLayout(zoomSamplesRef.current, event.timestamp, next, previous)
+          );
+        } else if (event.type === RRWEB_INCREMENTAL && data.source === SOURCE_VIEWPORT_RESIZE) {
+          shown = layoutViewport.next(recorded);
+        } else {
+          return;
+        }
+        apply();
       });
       if (live) {
         return;
@@ -507,6 +592,7 @@ export function ReplayPlayer({
         mouseTail: { strokeStyle: theme.colors.primary.main },
         showWarning: false,
         UNSAFE_replayCanvas: false,
+        insertStyleRules: REPLAY_STYLE_RULES,
       });
       attach(replayer);
       // Never later than the newest event allows (Loki may be behind the target).
@@ -569,12 +655,13 @@ export function ReplayPlayer({
       mouseTail: { strokeStyle: theme.colors.primary.main },
       showWarning: false,
       UNSAFE_replayCanvas: false,
+      insertStyleRules: REPLAY_STYLE_RULES,
     });
     attach(replayer);
     if (wantPlayRef.current) {
       replayer.play(start);
     } else {
-      replayer.pause(start);
+      replayer.pause(pauseOffset(trackRef.current, start));
     }
     scheduleSync();
     return true;

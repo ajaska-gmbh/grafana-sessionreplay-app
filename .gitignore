@@ -46,3 +46,8 @@ ci/
 .idea
 
 .eslintcache
+
+# Replay bench (bench/README.md)
+bench/dist/
+bench/results/
+bench/artifacts/

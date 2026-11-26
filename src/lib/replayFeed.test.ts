@@ -9,6 +9,7 @@ import {
   chunksFrom,
   isReady,
   nextChunkOffset,
+  pauseOffset,
   readyAt,
   trackLength,
   TrackFeed,
@@ -106,6 +107,14 @@ const load = (replay: ReplayTimeline, ...gens: number[]) => {
   return replay.tracks[0];
 };
 const times = (events: ReadonlyArray<{ timestamp: number }>) => events.map((event) => event.timestamp / MIN);
+
+describe('pauseOffset', () => {
+  it('pauses a millisecond past the end, so the last event is shown too', () => {
+    const empty = track([]);
+    expect(pauseOffset(empty, 12 * MIN)).toBe(12 * MIN);
+    expect(pauseOffset(empty, 29 * MIN)).toBe(29 * MIN + 1);
+  });
+});
 
 describe('track geometry', () => {
   it('has its length from the index and finds the chunk at an offset', () => {

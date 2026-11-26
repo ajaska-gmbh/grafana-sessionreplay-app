@@ -10,6 +10,7 @@
     "lint": "eslint --cache .",
     "lint:fix": "npm run lint -- --fix && prettier --write --list-different .",
     "e2e": "playwright test",
+    "bench": "webpack -c bench/webpack.config.ts && tsc -p bench/tsconfig.json && playwright test -c bench/playwright.config.ts",
     "server": "docker compose up --build",
     "sign": "sign-plugin",
     "patch:apply": "patch-package --error-on-fail"

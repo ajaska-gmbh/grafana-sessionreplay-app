@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Phones and tablets replay as the visitor saw them, checked by a new bench (`npm run bench`) against recorded visits on emulated iPhone, iPad, Pixel and Galaxy Tab and against real sessions:
+  - The page no longer scales up and down and jumps while the visitor scrolls: iOS records a resize every time the URL bar shows or hides; touch recordings are fitted to the tallest height recorded at that width.
+  - The scroll position stays right when the URL bar or keyboard changes the height: scroll anchoring of the browser showing the replay no longer moves it.
+  - A page that opened zoomed out (content wider than the screen) is laid out at its real width (from the page's zoom samples), not at the visible width.
+  - A new page load is never taken for a pinch zoom of the page before (it was replayed at the wrong width).
+  - A seek into a later page load starts at that page's own scroll position, not at the last page's.
+  - A pinch zoom held briefly is shown held, not fading out over the hold.
+  - Seeking to the very end shows the last event too.
+- `data-replay-text`: pages can leave a text for the replay on any element (drawn over it in the replayed page only). LP Shop's checkout shows Stripe's card fields as stars this way (typing, complete with the brand, invalid) instead of an empty box.
+
 ## 0.8.2
 
 - Pinch zooms on phones: the replay keeps the page at its real layout width instead of reflowing it to the zoomed size (cut-off cards on mobile checkouts). Pages that record their zoom (`viewport_zoom` Faro events, LP Shop storefront) show the visitor's zoom and visible area on top, smoothly and live as well, with a "Visitor's zoom" toggle. Also repairs six `package-lock.json` entries the 0.3.0 release bump had corrupted, which broke `npm ci` (#26).

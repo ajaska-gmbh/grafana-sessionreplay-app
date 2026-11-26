@@ -16,6 +16,15 @@ export function trackLength(track: ReplayTrack): number {
 }
 
 /**
+ * Where to pause rrweb for `offsetMs`: rrweb applies the events before the
+ * offset, so at the very end the last event (often the visitor's last scroll
+ * or input) would be left out. One millisecond past the end includes it.
+ */
+export function pauseOffset(track: ReplayTrack, offsetMs: number): number {
+  return offsetMs >= trackLength(track) ? offsetMs + 1 : offsetMs;
+}
+
+/**
  * The chunk playing at `offsetMs` (from the track start): the last one that
  * starts at or before it. Between two recordings (a reload) that is the
  * earlier recording's last chunk, whose page stays on screen.
@@ -206,7 +215,7 @@ export class TrackFeed {
     if (play && ready) {
       replayer.play(offsetMs);
     } else {
-      replayer.pause(offsetMs);
+      replayer.pause(pauseOffset(this.current, offsetMs));
     }
     return ready;
   }

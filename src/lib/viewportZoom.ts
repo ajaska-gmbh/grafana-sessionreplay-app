@@ -9,8 +9,14 @@ import type { Viewport } from './layoutViewport';
  */
 export const ZOOM_EVENT = 'viewport_zoom';
 
-/** Samples further apart than this are not blended: the zoom held until the later one. */
-export const ZOOM_BLEND_MAX_MS = 1500;
+/**
+ * Samples further apart than this are not blended: the zoom held until the
+ * later one. The page sends a sample at most every 250 ms while the visitor
+ * pinches or pans and none while the zoom holds, so only samples this close
+ * belong to one movement; blending across a hold made a zoom kept for half a
+ * second fade out over that half second, as if never held.
+ */
+export const ZOOM_BLEND_MAX_MS = 350;
 /** Closer to 1 than this is no zoom. */
 const UNZOOMED = 0.01;
 
@@ -120,4 +126,41 @@ export function wrapperStyle(fit: number, viewport: Viewport, zoom?: Zoom): Wrap
     transform: `scale(${fit * zoom.scale}) translate(${px(-left)}, ${px(-top)})`,
     clipPath: `inset(${px(top)} ${px(viewport.width - left - width)} ${px(viewport.height - top - height)} ${px(left)})`,
   };
+}
+
+/** A page's first zoom sample comes after it loaded (Faro starts after the load event)… */
+const PAGE_LOAD_SAMPLE_MS = 15_000;
+/** …or just before rrweb's first snapshot, when the recorder starts later than the page's own script. */
+const PAGE_LOAD_SAMPLE_BEFORE_MS = 2000;
+
+/**
+ * The layout viewport of a page that opened zoomed out: content wider than
+ * the screen makes mobile browsers show the page shrunk to fit, and rrweb
+ * records the visible area (e.g. 1060 px wide on an 810 px iPad) although the
+ * page is laid out at the screen's size (`layoutWidth` × `layoutHeight`;
+ * Chromium reports scale 1 there, so the page sends a sample at load whenever
+ * its layout is narrower than the visible area). Read from the first zoom
+ * sample around the page load at `timeMs`, after `sinceMs` (the page load
+ * before) and before `untilMs` (the next one); the caller uses it only when
+ * narrower than the recorded viewport.
+ */
+export function zoomedOutLayout(
+  samples: readonly ZoomSample[],
+  timeMs: number,
+  untilMs = Infinity,
+  sinceMs = -Infinity
+): Viewport | undefined {
+  // The sample may come just before rrweb's snapshot, never before the last page load (`sinceMs`).
+  const from = Math.max(timeMs - PAGE_LOAD_SAMPLE_BEFORE_MS, sinceMs + 1);
+  const sample = samples.find((candidate) => candidate.timeMs >= from);
+  // A pinch zoom's sample (scale above 1) has the layout wider than the visible area.
+  if (
+    !sample ||
+    sample.timeMs >= untilMs ||
+    sample.timeMs > timeMs + PAGE_LOAD_SAMPLE_MS ||
+    sample.scale > 1 + UNZOOMED
+  ) {
+    return undefined;
+  }
+  return { width: sample.layoutWidth, height: sample.layoutHeight };
 }

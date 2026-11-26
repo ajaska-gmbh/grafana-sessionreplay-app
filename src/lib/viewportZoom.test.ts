@@ -1,5 +1,13 @@
 import type { JourneyEvent } from './journey';
-import { isZoomed, wrapperStyle, ZOOM_BLEND_MAX_MS, zoomAt, zoomSamples, type ZoomSample } from './viewportZoom';
+import {
+  isZoomed,
+  wrapperStyle,
+  ZOOM_BLEND_MAX_MS,
+  zoomAt,
+  zoomedOutLayout,
+  zoomSamples,
+  type ZoomSample,
+} from './viewportZoom';
 
 const zoomEvent = (timeMs: number, data: Record<string, string>, name = 'viewport_zoom'): JourneyEvent => ({
   id: `${timeMs}`,
@@ -60,7 +68,7 @@ describe('zoomSamples', () => {
 });
 
 describe('zoomAt', () => {
-  const samples = [sample(1000, 2, 0, 0), sample(1500, 3, 100, 200), sample(5000, 2.5, 10, 20), sample(6000, 1)];
+  const samples = [sample(1000, 2, 0, 0), sample(1250, 3, 100, 200), sample(5000, 2.5, 10, 20), sample(5300, 1)];
 
   it('is no zoom before the first sample and without samples', () => {
     expect(zoomAt([], 1000)).toBeUndefined();
@@ -69,20 +77,27 @@ describe('zoomAt', () => {
 
   it('blends close samples so pinches and pans play smoothly', () => {
     expect(zoomAt(samples, 1000)).toMatchObject({ scale: 2, offsetLeft: 0, offsetTop: 0 });
-    expect(zoomAt(samples, 1250)).toMatchObject({ scale: 2.5, offsetLeft: 50, offsetTop: 100, layoutWidth: 320 });
-    expect(zoomAt(samples, 1500)).toMatchObject({ scale: 3, offsetLeft: 100, offsetTop: 200 });
+    expect(zoomAt(samples, 1125)).toMatchObject({ scale: 2.5, offsetLeft: 50, offsetTop: 100, layoutWidth: 320 });
+    expect(zoomAt(samples, 1250)).toMatchObject({ scale: 3, offsetLeft: 100, offsetTop: 200 });
   });
 
   it('holds a sample until a distant next one', () => {
-    expect(5000 - 1500).toBeGreaterThan(ZOOM_BLEND_MAX_MS);
+    expect(5000 - 1250).toBeGreaterThan(ZOOM_BLEND_MAX_MS);
     expect(zoomAt(samples, 4999)).toMatchObject({ scale: 3, offsetLeft: 100, offsetTop: 200 });
     expect(zoomAt(samples, 5000)).toMatchObject({ scale: 2.5 });
   });
 
+  it('holds a zoom kept for less than a second until the visitor lets go', () => {
+    // Pinched to 2x, held 0.4 s, back to 1x: the replay shows 2x all along, not a fade.
+    const held = [sample(1000, 2), sample(1400, 1)];
+    expect(zoomAt(held, 1399)).toMatchObject({ scale: 2 });
+    expect(zoomAt(held, 1400)).toBeUndefined();
+  });
+
   it('is no zoom once the visitor is back at scale 1', () => {
-    expect(zoomAt(samples, 5990)).toMatchObject({ scale: expect.closeTo(1.015, 5) });
-    expect(zoomAt(samples, 5999)).toBeUndefined();
-    expect(zoomAt(samples, 6000)).toBeUndefined();
+    expect(zoomAt(samples, 5290)).toMatchObject({ scale: expect.closeTo(1.05, 5) });
+    expect(zoomAt(samples, 5299)).toBeUndefined();
+    expect(zoomAt(samples, 5300)).toBeUndefined();
     expect(zoomAt(samples, 60_000)).toBeUndefined();
   });
 
@@ -132,5 +147,34 @@ describe('wrapperStyle', () => {
       transform: 'scale(2) translate(0px, 0px)',
       clipPath: 'inset(0px 0px 0px 0px)',
     });
+  });
+});
+
+describe('zoomedOutLayout', () => {
+  const at = (timeMs: number, scale: number, layoutWidth: number, layoutHeight = 839): ZoomSample => ({
+    timeMs,
+    scale,
+    offsetLeft: 0,
+    offsetTop: 0,
+    width: 576,
+    height: 1173,
+    layoutWidth,
+    layoutHeight,
+  });
+
+  it("is the layout of the page load's first sample", () => {
+    expect(zoomedOutLayout([at(1200, 1, 412)], 1000)).toEqual({ width: 412, height: 839 });
+    // iOS reports the zoom-out as a scale below 1.
+    expect(zoomedOutLayout([at(1200, 0.76, 800, 950)], 1000)).toEqual({ width: 800, height: 950 });
+    // Just before rrweb's snapshot, but not from the page before.
+    expect(zoomedOutLayout([at(900, 1, 412)], 1000)).toEqual({ width: 412, height: 839 });
+    expect(zoomedOutLayout([at(900, 1, 412)], 1000, Infinity, 950)).toBeUndefined();
+  });
+
+  it('is nothing for a pinch zoom, a later page, or a sample long after the load', () => {
+    expect(zoomedOutLayout([at(1200, 2, 412)], 1000)).toBeUndefined();
+    expect(zoomedOutLayout([at(5000, 1, 412)], 1000, 4000)).toBeUndefined();
+    expect(zoomedOutLayout([at(60_000, 1, 412)], 1000)).toBeUndefined();
+    expect(zoomedOutLayout([], 1000)).toBeUndefined();
   });
 });

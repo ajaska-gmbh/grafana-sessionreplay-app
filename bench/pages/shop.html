@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bench shop</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          16px/1.4 -apple-system,
+          system-ui,
+          sans-serif;
+        color: #111;
+      }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        height: 56px;
+        padding: 0 16px;
+        display: flex;
+        align-items: center;
+        background: #1f2937;
+        color: #fff;
+      }
+      .hero {
+        height: 100vh;
+        min-height: 320px;
+        display: flex;
+        align-items: flex-end;
+        padding: 24px;
+        background: linear-gradient(160deg, #f59e0b, #b45309);
+        color: #fff;
+        font-size: 28px;
+      }
+      .grid {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        grid-template-columns: 1fr;
+      }
+      @media (min-width: 640px) {
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (min-width: 1024px) {
+        .grid {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+      .card {
+        height: 180px;
+        border-radius: 12px;
+        background: #e5e7eb;
+        padding: 12px;
+      }
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px 16px 120px;
+      }
+      input,
+      .field {
+        height: 48px;
+        border: 1px solid #9ca3af;
+        border-radius: 8px;
+        padding: 0 12px;
+        font-size: 16px;
+      }
+      .field {
+        position: relative;
+        padding: 0;
+        overflow: hidden;
+      }
+      .field iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+      .cta {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #111;
+        color: #fff;
+        z-index: 3;
+      }
+      .wide {
+        width: 560px;
+        height: 80px;
+        margin: 16px;
+        background: repeating-linear-gradient(90deg, #ddd 0 20px, #bbb 20px 40px);
+      }
+    </style>
+  </head>
+  <body>
+    <header data-bench="header">Bench shop</header>
+    <section class="hero" data-bench="hero">Posture brace</section>
+    <div id="wide-slot"></div>
+    <div class="grid">
+      <div class="card" data-bench="card1">One</div>
+      <div class="card" data-bench="card2">Two</div>
+      <div class="card">Three</div>
+      <div class="card">Four</div>
+      <div class="card">Five</div>
+      <div class="card">Six</div>
+      <div class="card">Seven</div>
+      <div class="card" data-bench="card8">Eight</div>
+    </div>
+    <form onsubmit="return false;">
+      <input data-bench="email" type="email" name="email" placeholder="Email" />
+      <input data-bench="name" type="text" name="name" autocomplete="name" placeholder="Full name" />
+      <input data-bench="manual-card" type="text" autocomplete="cc-number" placeholder="Card number (own field)" />
+      <div class="field" data-bench="card-number" data-lp-stripe="card-number">
+        <iframe id="card-frame" title="Card number"></iframe>
+      </div>
+      <a href="checkout.html" data-bench="to-checkout">Checkout</a>
+    </form>
+    <div class="cta" data-bench="cta">Get yours</div>
+    <script>
+      // The card field frame comes from the other origin, like Stripe's.
+      document.getElementById('card-frame').src = `http://127.0.0.1:${Number(location.port) + 1}/pages/frame.html`;
+      if (new URLSearchParams(location.search).has('overflow')) {
+        const wide = document.createElement('div');
+        wide.className = 'wide';
+        wide.dataset.bench = 'wide';
+        document.getElementById('wide-slot').append(wide);
+      }
+    </script>
+    <script src="/dist/recorder.js"></script>
+  </body>
+</html>
