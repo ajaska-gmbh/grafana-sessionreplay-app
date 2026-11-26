@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
-- Phones and tablets replay as the visitor saw them, checked by a new bench (`npm run bench`) against recorded visits on emulated iPhone, iPad, Pixel and Galaxy Tab and against real sessions:
+- Phones and tablets replay as the visitor saw them, checked by a new bench (`npm run bench`, #28) against recorded visits on emulated iPhone, iPad, Pixel and Galaxy Tab and against real sessions:
   - The page no longer scales up and down and jumps while the visitor scrolls: iOS records a resize every time the URL bar shows or hides; touch recordings are fitted to the tallest height recorded at that width.
   - The scroll position stays right when the URL bar or keyboard changes the height: scroll anchoring of the browser showing the replay no longer moves it.
   - A page that opened zoomed out (content wider than the screen) is laid out at its real width (from the page's zoom samples), not at the visible width.
