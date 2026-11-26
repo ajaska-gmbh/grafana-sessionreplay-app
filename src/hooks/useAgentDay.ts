@@ -16,6 +16,7 @@ import type { PayloadBuckets } from '../lib/sessionBucket';
 import { fetchActiveSessionIds, fetchUserSessions } from '../lib/sessionQueries';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { sessionRange } from '../lib/sessions';
+import { errorText } from '../lib/errors';
 
 /** Session indexes read at once (each is a small query on its own payload bucket). */
 const INDEX_CONCURRENCY = 4;
@@ -125,7 +126,7 @@ export function useAgentDay(params: {
         })
         .catch((error: unknown) => {
           if (!cancelled && !abort.signal.aborted) {
-            const message = (error as { data?: { message?: string } })?.data?.message ?? String(error);
+            const message = errorText(error);
             setState((previous) => ({ ...previous, loading: false, error: message, key }));
           }
         })

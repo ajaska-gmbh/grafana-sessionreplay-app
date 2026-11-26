@@ -1,6 +1,7 @@
 import { getBackendSrv } from '@grafana/runtime';
 import { LOKI_PAGE_SIZE } from '../constants';
 import type { LokiLine } from '../types';
+import { isTransient } from './errors';
 
 interface FrameField {
   name: string;
@@ -91,6 +92,43 @@ export function framesToLines(response: DsQueryResponse): LokiLine[] {
  * request.
  */
 export function createLokiFetcher(datasourceUid: string): LokiFetcher {
+  return withRetries(singleRequest(datasourceUid));
+}
+
+/** Pauses before the retries of a transient failure (Grafana restarting, Loki busy). */
+export const RETRY_DELAYS_MS = [500, 2000];
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Tries a request again after a transient failure (502/503/504/429, no response), a few times. */
+export function withRetries(fetcher: LokiFetcher, delaysMs: readonly number[] = RETRY_DELAYS_MS): LokiFetcher {
+  return async (args) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fetcher(args);
+      } catch (error) {
+        if (attempt >= delaysMs.length || !isTransient(error) || args.signal?.aborted) {
+          throw error;
+        }
+        await wait(delaysMs[attempt], args.signal);
+      }
+    }
+  };
+}
+
+function singleRequest(datasourceUid: string): LokiFetcher {
   return ({ expr, fromMs, toMs, limit, direction, signal }) =>
     new Promise<LokiLine[]>((resolve, reject) => {
       if (signal?.aborted) {

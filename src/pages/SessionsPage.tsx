@@ -36,6 +36,7 @@ import { FUNNEL_STEPS, STEP_LABELS } from '../lib/insights';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
 import { matchesSearch, sessionRange, type SessionSummary } from '../lib/sessions';
 import { testIds } from '../components/testIds';
+import { errorText } from '../lib/errors';
 
 const LOOKBACKS: Array<ComboboxOption<number>> = [
   { label: 'Last hour', value: 3600_000 },
@@ -207,7 +208,7 @@ function SessionsPage() {
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          const failureText = (error as { data?: { message?: string } })?.data?.message ?? String(error);
+          const failureText = errorText(error);
           setResult({
             key,
             nowMs: now,
@@ -249,7 +250,7 @@ function SessionsPage() {
         })
         .catch((error: unknown) => {
           if (!cancelled) {
-            const failureText = (error as { data?: { message?: string } })?.data?.message ?? String(error);
+            const failureText = errorText(error);
             setMatches({ key: matchKey, ids: new Set(), extra: [], failure: failureText });
           }
         });

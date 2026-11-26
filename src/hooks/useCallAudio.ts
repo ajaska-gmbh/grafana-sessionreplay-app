@@ -21,6 +21,7 @@ import {
   noSegments,
   type CallAudioSegments,
 } from '../lib/recorderClient';
+import { errorText } from '../lib/errors';
 
 /**
  * While live, the newest audio is listed this often (one small listing: the
@@ -116,7 +117,7 @@ export function useCallAudio(options: {
         })
         .catch((failure: unknown) => {
           if (!cancelled) {
-            setError((failure as { data?: { message?: string } })?.data?.message ?? String(failure));
+            setError(errorText(failure));
           }
         })
         .finally(() => {

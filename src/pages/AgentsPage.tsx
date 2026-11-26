@@ -24,6 +24,7 @@ import { useSettings } from '../hooks/useSettings';
 import { agentDayPath, dayOf, dayQueryRange, groupAgents, matchesAgent, type Agent } from '../lib/agents';
 import { fetchActiveSessionIds, fetchAppNames, fetchSessions } from '../lib/sessionQueries';
 import { LIVE_WINDOW_MS } from '../lib/sessionStore';
+import { errorText } from '../lib/errors';
 
 type Row = Agent & { id: string; live: boolean };
 
@@ -81,7 +82,7 @@ function AgentsPage() {
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          const failure = (error as { data?: { message?: string } })?.data?.message ?? String(error);
+          const failure = errorText(error);
           setLoaded({ key, agents: [], active: new Set(), truncated: false, failure });
         }
       });
